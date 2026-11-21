@@ -1,0 +1,828 @@
+import { useEffect, useRef, useState } from "react";
+import {
+  BsArrowLeft,
+  BsCheckCircle,
+  BsCheckCircleFill,
+  BsChevronLeft,
+  BsCircle,
+  BsEye,
+  BsEyeSlash,
+} from "react-icons/bs";
+import planora from "../assets/planora.svg";
+
+type Props = {
+  // The returning user's first name, shown in the greeting
+  name?: string;
+};
+
+// Which screen is showing. All screens live in this one component, so the page
+// and its address never change when the user moves between them.
+type View = "signin" | "forgot" | "loading" | "code" | "newPassword";
+
+// How many digits the reset code has
+const CODE_LENGTH = 4;
+
+// How long the "Account Verified" toast stays on screen (milliseconds)
+const TOAST_DURATION = 5000;
+
+// The page users land on after signing in. Change this to your home page route.
+const HOME_PATH = "/home";
+
+const emptyDigits = () => Array<string>(CODE_LENGTH).fill("");
+
+// New password rules: add, remove or edit rules here and the checklist follows
+const passwordRules = [
+  {
+    id: "length",
+    label: "At least 8 characters",
+    test: (v: string) => v.length >= 8,
+  },
+  {
+    id: "letter",
+    label: "Contains a letter",
+    test: (v: string) => /\p{L}/u.test(v),
+  },
+  {
+    id: "special",
+    label: "Contains a special character (e.g. ! @ # $ %)",
+    test: (v: string) => /[^\p{L}\p{N}\s]/u.test(v),
+  },
+];
+
+// Face ID style icon, drawn inline so it needs no extra package
+const FaceIdIcon = () => (
+  <svg
+    aria-hidden="true"
+    viewBox="0 0 40 40"
+    fill="none"
+    stroke="#1A7431"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    className="h-10 w-10"
+  >
+    {/* corners */}
+    <path d="M4 13V9a5 5 0 0 1 5-5h4" />
+    <path d="M27 4h4a5 5 0 0 1 5 5v4" />
+    <path d="M36 27v4a5 5 0 0 1-5 5h-4" />
+    <path d="M13 36H9a5 5 0 0 1-5-5v-4" />
+    {/* eyes, nose, smile */}
+    <path d="M14 15v3" />
+    <path d="M26 15v3" />
+    <path d="M20 15v6a1.5 1.5 0 0 1-1.5 1.5H18" />
+    <path d="M14 27c3 3 9 3 12 0" />
+  </svg>
+);
+
+// Shared input look (16px text so phones don't zoom in when it is tapped)
+const inputClass =
+  "h-11 w-full min-w-0 rounded-xl border-[0.5px] border-[#E5EAF1] bg-white px-4 text-[16px] leading-normal font-normal text-[#111827] outline-none placeholder:text-[#C6CCD3] focus:border-[#1A7431]";
+
+// TODO: replace the body with your real "send reset code" request. It should
+// throw an Error (with a readable message) if the code couldn't be sent.
+// The short wait below only stands in for the network call, so the loading
+// screen can be seen while you build the backend.
+const sendResetCode = async (_email: string): Promise<void> => {
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+};
+
+// TODO: replace the body with your real "verify code" request. It should
+// throw an Error (with a readable message) if the code is wrong or expired.
+// The short wait below only stands in for the network call, so the loading
+// screen can be seen. Until you connect your backend, every code is accepted.
+const verifyResetCode = async (
+  _email: string,
+  _code: string,
+): Promise<void> => {
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+};
+
+// TODO: replace the body with your real sign-in request. It should throw an
+// Error (with a readable message) if the password is wrong.
+// The short wait below only stands in for the network call, so the loading
+// screen can be seen. Until you connect your backend, every password is accepted.
+const signInWithPassword = async (_password: string): Promise<void> => {
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+};
+
+const WelcomeBack = ({ name = "Adaeze" }: Props) => {
+  const [view, setView] = useState<View>("signin");
+
+  // Sign in screen
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+
+  // Forgot password screen
+  const [email, setEmail] = useState("");
+
+  // Reset code screen: one entry per box
+  const [digits, setDigits] = useState<string[]>(emptyDigits);
+  const codeRefs = useRef<(HTMLInputElement | null)[]>([]);
+
+  // Create new password screen
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showNew, setShowNew] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+
+  // "Account Verified Successfully" toast
+  const [showToast, setShowToast] = useState(false);
+
+  // Error shown on the forgot password / reset code screens
+  const [errorMsg, setErrorMsg] = useState("");
+
+  // The Continue button only works once something has been typed
+  const canSubmit = password.length > 0;
+
+  // The reset button only works once the email looks valid
+  const canReset = /^\S+@\S+\.\S+$/.test(email.trim());
+
+  // The verify button only works once every box is filled
+  const canVerify = digits.every((d) => d !== "");
+
+  // New password: every rule met, and both fields match
+  const passwordChecks = passwordRules.map((rule) => ({
+    ...rule,
+    passed: rule.test(newPassword),
+  }));
+  const isNewPasswordValid = passwordChecks.every((check) => check.passed);
+  const passwordsMatch = newPassword === confirmPassword;
+  const showMismatch = confirmPassword.length > 0 && !passwordsMatch;
+  const canCreate =
+    isNewPasswordValid && confirmPassword.length > 0 && passwordsMatch;
+
+  // Put the cursor in the first box when the reset code screen opens
+  useEffect(() => {
+    if (view === "code") codeRefs.current[0]?.focus();
+  }, [view]);
+
+  // The toast closes by itself after a few seconds (or when it is tapped)
+  useEffect(() => {
+    if (!showToast) return;
+    const timer = setTimeout(() => setShowToast(false), TOAST_DURATION);
+    return () => clearTimeout(timer);
+  }, [showToast]);
+
+  // Shows the loading screen while signing in, then opens the home page.
+  // If it fails, goes back to the sign in screen with an error (the password
+  // stays typed in).
+  const handleSubmit = async () => {
+    if (!canSubmit) return;
+    setErrorMsg("");
+    setView("loading");
+    try {
+      await signInWithPassword(password);
+      window.location.assign(HOME_PATH);
+    } catch (e) {
+      setErrorMsg(
+        e instanceof Error && e.message
+          ? e.message
+          : "Sign in failed. Please try again.",
+      );
+      setView("signin");
+    }
+  };
+
+  const handleBiometrics = () => {
+    // TODO: connect to biometric sign-in (e.g. WebAuthn)
+  };
+
+  // Shows the loading screen, asks for a code, then opens the reset code
+  // screen. If it fails, goes back to the screen the user was on.
+  const requestCode = async (onError: View) => {
+    setErrorMsg("");
+    setView("loading");
+    try {
+      await sendResetCode(email.trim());
+      setDigits(emptyDigits());
+      setView("code");
+    } catch (e) {
+      setErrorMsg(
+        e instanceof Error && e.message
+          ? e.message
+          : "Couldn't send the code. Please try again.",
+      );
+      setView(onError);
+    }
+  };
+
+  const handleReset = () => {
+    if (!canReset) return;
+    requestCode("forgot");
+  };
+
+  const handleResend = () => requestCode("code");
+
+  // Shows the loading screen while the code is checked. If it is right: show
+  // the toast and open the create new password screen. If not: go back to the
+  // reset code screen with an error (the digits stay filled in).
+  const handleVerify = async () => {
+    if (!canVerify) return;
+    setErrorMsg("");
+    setView("loading");
+    try {
+      await verifyResetCode(email.trim(), digits.join(""));
+      setNewPassword("");
+      setConfirmPassword("");
+      setShowNew(false);
+      setShowConfirm(false);
+      setView("newPassword");
+      setShowToast(true);
+    } catch (e) {
+      setErrorMsg(
+        e instanceof Error && e.message
+          ? e.message
+          : "That code didn't work. Please try again.",
+      );
+      setView("code");
+    }
+  };
+
+  const handleCreatePassword = () => {
+    if (!canCreate) return;
+    // TODO: connect to your reset-password endpoint
+    // (send `email`, the code digits.join("") and `newPassword`).
+    // When you do, run the lines below only after the request succeeds.
+
+    // Back to the sign in screen, with everything from the reset cleared
+    setPassword("");
+    setShowPassword(false);
+    setNewPassword("");
+    setConfirmPassword("");
+    setShowNew(false);
+    setShowConfirm(false);
+    setDigits(emptyDigits());
+    setErrorMsg("");
+    setShowToast(false);
+    setView("signin");
+  };
+
+  // Typing, pasting or autofilling: extra digits flow into the next boxes
+  const handleDigitChange = (index: number, raw: string) => {
+    const cleaned = raw.replace(/\D/g, "");
+    setErrorMsg("");
+
+    setDigits((prev) => {
+      const next = [...prev];
+      if (!cleaned) {
+        next[index] = "";
+        return next;
+      }
+      cleaned
+        .slice(0, CODE_LENGTH - index)
+        .split("")
+        .forEach((d, k) => {
+          next[index + k] = d;
+        });
+      return next;
+    });
+
+    if (cleaned) {
+      codeRefs.current[
+        Math.min(index + cleaned.length, CODE_LENGTH - 1)
+      ]?.focus();
+    }
+  };
+
+  const handleDigitKeyDown = (
+    index: number,
+    e: React.KeyboardEvent<HTMLInputElement>,
+  ) => {
+    if (e.key === "Backspace" && !digits[index] && index > 0) {
+      // empty box: erase and move to the previous one
+      e.preventDefault();
+      setDigits((prev) => {
+        const next = [...prev];
+        next[index - 1] = "";
+        return next;
+      });
+      codeRefs.current[index - 1]?.focus();
+    } else if (e.key === "ArrowLeft" && index > 0) {
+      codeRefs.current[index - 1]?.focus();
+    } else if (e.key === "ArrowRight" && index < CODE_LENGTH - 1) {
+      codeRefs.current[index + 1]?.focus();
+    }
+  };
+
+  const isForgot = view === "forgot";
+  const isCode = view === "code";
+  const isNewPassword = view === "newPassword";
+
+  // The two fields on the create new password screen
+  const newPasswordFields = [
+    {
+      id: "new-password",
+      label: "New Password",
+      placeholder: "Enter New Password",
+      value: newPassword,
+      onChange: setNewPassword,
+      show: showNew,
+      toggle: () => setShowNew((prev) => !prev),
+    },
+    {
+      id: "confirm-password",
+      label: "Confirm Password",
+      placeholder: "Confirm New Password",
+      value: confirmPassword,
+      onChange: setConfirmPassword,
+      show: showConfirm,
+      toggle: () => setShowConfirm((prev) => !prev),
+    },
+  ];
+
+  // Blank screen with a circular loader, shown while the code is being sent
+  // or checked
+  if (view === "loading") {
+    return (
+      <div className="flex min-h-dvh w-full touch-manipulation items-center justify-center bg-white">
+        <div role="status" aria-live="polite">
+          <div className="h-12 w-12 animate-spin rounded-full border-4 border-[#D8E5F3] border-t-[#1A7431]" />
+          <span className="sr-only">Loading...</span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    // touch-manipulation stops the double-tap zoom on every tap target, the
+    // text-size-adjust rule stops phones from silently enlarging text, and
+    // overflow-x-hidden stops sideways scrolling on very narrow screens
+    <div className="min-h-dvh w-full touch-manipulation overflow-x-hidden bg-[#F8F9FB] [-webkit-text-size-adjust:100%] [text-size-adjust:100%]">
+      {/* "Account Verified Successfully" toast: sits at the top of the screen,
+          closes by itself, or when it is tapped */}
+      {showToast && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="pointer-events-none fixed inset-x-0 top-0 z-50 px-4 pt-[max(16px,env(safe-area-inset-top))]"
+        >
+          <button
+            type="button"
+            onClick={() => setShowToast(false)}
+            aria-label="Close notification"
+            className="pointer-events-auto mx-auto flex w-full max-w-md touch-manipulation items-start gap-4 rounded-2xl border border-[#D8E5F3] bg-white px-5 py-5 text-left shadow-[0_8px_24px_rgba(17,24,39,0.12)]"
+          >
+            <BsCheckCircle
+              aria-hidden="true"
+              className="mt-0.5 h-6 w-6 shrink-0 text-[#1A7431]"
+            />
+            <span className="flex min-w-0 flex-col gap-1.5">
+              <span className="text-[clamp(15px,4.2vw,16px)] leading-tight font-medium text-[#111827]">
+                Account Verified Successfully
+              </span>
+              <span className="text-[clamp(14px,4vw,16px)] leading-relaxed font-normal text-[#6B7280]">
+                Please close this alert and get right into Planora
+              </span>
+            </span>
+          </button>
+        </div>
+      )}
+
+      <div className="mx-auto flex min-h-dvh w-full max-w-md flex-col">
+        {/* Header: tinted area with the logo and greeting. Spacing scales with
+            the screen height so small phones and landscape still fit. */}
+        <header className="relative overflow-hidden bg-[#F1F4F8] px-4 pt-[clamp(32px,12dvh,110px)] pb-6 min-[360px]:px-5 min-[414px]:px-6">
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 375 240"
+            preserveAspectRatio="xMidYMin slice"
+            className="pointer-events-none absolute inset-x-0 top-0 h-auto w-full"
+          >
+            <path
+              d="M73.6054 -183.584L-89.0054 184.199L176.351 236.263L533.155 -112.813L73.6054 -183.584Z"
+              fill="#EBEFF5"
+            />
+          </svg>
+
+          {/* Back arrow, only on the forgot password screen */}
+          {isForgot && (
+            <button
+              type="button"
+              onClick={() => setView("signin")}
+              aria-label="Back to sign in"
+              className="absolute top-2 left-2 z-20 flex h-11 w-11 touch-manipulation items-center justify-center text-[#111827] min-[360px]:left-3"
+            >
+              <BsArrowLeft size={22} />
+            </button>
+          )}
+
+          <div className="relative z-10 flex justify-center">
+            <img
+              src={planora}
+              alt="Planora"
+              className="h-auto max-h-[clamp(32px,8dvh,64px)] w-auto max-w-[50%] object-contain"
+            />
+          </div>
+
+          <div className="relative z-10 mt-[clamp(20px,7dvh,56px)] flex flex-col gap-1">
+            {isNewPassword ? (
+              <>
+                <h1 className="text-[clamp(18px,5.5vw,22px)] leading-tight font-semibold break-words text-[#111827]">
+                  Create New Password
+                </h1>
+                <p className="text-[clamp(13px,3.8vw,14px)] font-normal text-[#6B7280]">
+                  Choose a strong password to keep your account secure.
+                </p>
+              </>
+            ) : isCode ? (
+              <>
+                <h1 className="text-[clamp(18px,5.5vw,22px)] leading-tight font-semibold break-words text-[#111827]">
+                  Enter Reset Code
+                </h1>
+                <p className="text-[clamp(13px,3.8vw,14px)] font-normal text-[#6B7280]">
+                  We sent a {CODE_LENGTH}-digit code to{" "}
+                  <span className="break-all">{email.trim()}</span>
+                </p>
+              </>
+            ) : isForgot ? (
+              <>
+                <h1 className="text-[clamp(18px,5.5vw,22px)] leading-tight font-semibold break-words text-[#111827]">
+                  Forgot Password?
+                </h1>
+                <p className="text-[clamp(13px,3.8vw,14px)] font-normal text-[#6B7280]">
+                  Enter your email address to receive a reset code.
+                </p>
+              </>
+            ) : (
+              <>
+                <h1 className="text-[clamp(18px,5.5vw,22px)] leading-tight font-semibold break-words text-[#111827]">
+                  Welcome Back, {name}
+                </h1>
+                <p className="text-[clamp(13px,3.8vw,14px)] font-normal text-[#6B7280]">
+                  Not your account?{" "}
+                  <a href="/signup" className="font-medium text-[#1A7431]">
+                    Sign Up
+                  </a>
+                </p>
+              </>
+            )}
+          </div>
+        </header>
+
+        {/* Sheet with rounded top corners that overlaps the header */}
+        <main className="relative z-10 -mt-4 flex flex-1 flex-col rounded-t-3xl bg-[#F8F9FB] px-4 pt-6 pb-[max(24px,env(safe-area-inset-bottom))] min-[360px]:px-5 min-[414px]:px-6">
+          {isNewPassword ? (
+            /* ---------- Screen 4: Create new password ---------- */
+            <div className="flex flex-1 flex-col">
+              <form
+                noValidate
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleCreatePassword();
+                }}
+                className="flex flex-col gap-4"
+              >
+                {newPasswordFields.map((field, index) => (
+                  <div key={field.id} className="flex flex-col gap-2">
+                    <label
+                      htmlFor={field.id}
+                      className="text-[14px] font-medium text-[#111827]"
+                    >
+                      {field.label}
+                    </label>
+
+                    <div className="relative">
+                      <input
+                        id={field.id}
+                        name={field.id}
+                        type={field.show ? "text" : "password"}
+                        autoComplete="new-password"
+                        autoCapitalize="none"
+                        autoCorrect="off"
+                        spellCheck={false}
+                        enterKeyHint={index === 0 ? "next" : "go"}
+                        placeholder={field.placeholder}
+                        value={field.value}
+                        onChange={(e) => field.onChange(e.target.value)}
+                        style={{ fontSize: "16px" }}
+                        className={`${inputClass} pr-12 ${
+                          index === 1 && showMismatch ? "border-[#E74C3C]" : ""
+                        }`}
+                      />
+                      <button
+                        type="button"
+                        onClick={field.toggle}
+                        aria-label={
+                          field.show ? "Hide password" : "Show password"
+                        }
+                        className="absolute top-0 right-0 flex h-11 w-11 touch-manipulation items-center justify-center text-[#9CA3AF]"
+                      >
+                        {field.show ? (
+                          <BsEye size={18} />
+                        ) : (
+                          <BsEyeSlash size={18} />
+                        )}
+                      </button>
+                    </div>
+
+                    {/* Live checklist under the new password field */}
+                    {index === 0 && newPassword.length > 0 && (
+                      <ul aria-live="polite" className="flex flex-col gap-1">
+                        {passwordChecks.map((check) => (
+                          <li
+                            key={check.id}
+                            className={`flex items-center gap-2 text-[12px] font-normal ${
+                              check.passed ? "text-[#1A7431]" : "text-[#6B7280]"
+                            }`}
+                          >
+                            {check.passed ? (
+                              <BsCheckCircleFill
+                                aria-hidden="true"
+                                className="h-3.5 w-3.5 shrink-0"
+                              />
+                            ) : (
+                              <BsCircle
+                                aria-hidden="true"
+                                className="h-3.5 w-3.5 shrink-0"
+                              />
+                            )}
+                            <span>{check.label}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+
+                    {index === 1 && showMismatch && (
+                      <p
+                        role="alert"
+                        className="text-[12px] font-normal text-[#E74C3C]"
+                      >
+                        Passwords don't match.
+                      </p>
+                    )}
+                  </div>
+                ))}
+
+                <button
+                  type="submit"
+                  disabled={!canCreate}
+                  className="mt-1 h-11 w-full touch-manipulation rounded-xl bg-[#1A7431] px-3 text-[14px] font-normal text-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Create Password
+                </button>
+              </form>
+
+              {/* Back pill, pushed to the bottom right of the sheet */}
+              <div className="mt-auto flex justify-end pt-8">
+                <button
+                  type="button"
+                  onClick={() => setView("code")}
+                  className="flex h-10 touch-manipulation items-center gap-2 rounded-xl bg-[#F1F4F8] px-4 text-[13px] font-medium text-[#111827]"
+                >
+                  <BsChevronLeft size={12} aria-hidden="true" />
+                  Back
+                </button>
+              </div>
+            </div>
+          ) : isCode ? (
+            /* ---------- Screen 3: Reset code ---------- */
+            <div className="flex flex-1 flex-col">
+              <form
+                noValidate
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleVerify();
+                }}
+                className="flex flex-col"
+              >
+                {/* One square box per digit. Each box keeps its text at 24px,
+                    so phones don't zoom in when a box is tapped. */}
+                <div
+                  className="grid gap-3"
+                  style={{
+                    gridTemplateColumns: `repeat(${CODE_LENGTH}, minmax(0, 1fr))`,
+                  }}
+                >
+                  {digits.map((digit, i) => (
+                    <input
+                      key={i}
+                      ref={(el) => {
+                        codeRefs.current[i] = el;
+                      }}
+                      name={`code-${i + 1}`}
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      autoComplete={i === 0 ? "one-time-code" : "off"}
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      aria-label={`Digit ${i + 1} of ${CODE_LENGTH}`}
+                      value={digit}
+                      onChange={(e) => handleDigitChange(i, e.target.value)}
+                      onKeyDown={(e) => handleDigitKeyDown(i, e)}
+                      onFocus={(e) => e.target.select()}
+                      style={{ fontSize: "24px" }}
+                      className="aspect-square w-full min-w-0 rounded-2xl border-[1.5px] border-[#E1E7F0] bg-[#FAFBFC] p-0 text-center text-[24px] leading-none font-semibold text-[#111827] outline-none focus:border-[#1A7431]"
+                    />
+                  ))}
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={!canVerify}
+                  className="mt-6 h-11 w-full touch-manipulation rounded-xl bg-[#1A7431] px-3 text-[14px] font-normal text-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Verify Code
+                </button>
+              </form>
+
+              {errorMsg && (
+                <p
+                  role="alert"
+                  className="mt-3 text-center text-[12px] font-normal text-[#E74C3C]"
+                >
+                  {errorMsg}
+                </p>
+              )}
+
+              <p className="mt-6 text-center text-[12px] font-normal text-[#6B7280]">
+                Didn't get the code?{" "}
+                <button
+                  type="button"
+                  onClick={handleResend}
+                  className="touch-manipulation py-1 font-medium text-[#1A7431]"
+                >
+                  Request a new code
+                </button>
+              </p>
+
+              {/* Back pill, pushed to the bottom right of the sheet */}
+              <div className="mt-auto flex justify-end pt-8">
+                <button
+                  type="button"
+                  onClick={() => setView("forgot")}
+                  className="flex h-10 touch-manipulation items-center gap-2 rounded-xl bg-[#F1F4F8] px-4 text-[13px] font-medium text-[#111827]"
+                >
+                  <BsChevronLeft size={12} aria-hidden="true" />
+                  Back
+                </button>
+              </div>
+            </div>
+          ) : isForgot ? (
+            /* ---------- Screen 2: Forgot password ---------- */
+            <>
+              <form
+                noValidate
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleReset();
+                }}
+                className="flex flex-col"
+              >
+                <label
+                  htmlFor="reset-email"
+                  className="text-[14px] font-medium text-[#111827]"
+                >
+                  Email Address
+                </label>
+
+                <input
+                  id="reset-email"
+                  name="email"
+                  type="email"
+                  inputMode="email"
+                  autoComplete="email"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  enterKeyHint="send"
+                  placeholder="Enter Email Address"
+                  value={email}
+                  onChange={(e) => {
+                    setEmail(e.target.value);
+                    setErrorMsg("");
+                  }}
+                  style={{ fontSize: "16px" }}
+                  className={`mt-2 ${inputClass}`}
+                />
+
+                <button
+                  type="submit"
+                  disabled={!canReset}
+                  className="mt-5 h-11 w-full touch-manipulation rounded-xl bg-[#1A7431] px-3 text-[14px] font-normal text-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Send Reset Code
+                </button>
+              </form>
+
+              {errorMsg && (
+                <p
+                  role="alert"
+                  className="mt-3 text-center text-[12px] font-normal text-[#E74C3C]"
+                >
+                  {errorMsg}
+                </p>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setView("signin")}
+                className="mx-auto mt-5 flex touch-manipulation p-2 text-[13px] font-medium text-[#1A7431]"
+              >
+                Back to Sign In
+              </button>
+            </>
+          ) : (
+            /* ---------- Screen 1: Sign in ---------- */
+            <>
+              <form
+                noValidate
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleSubmit();
+                }}
+                className="flex flex-col"
+              >
+                <label
+                  htmlFor="password"
+                  className="text-[14px] font-medium text-[#111827]"
+                >
+                  Password
+                </label>
+
+                <div className="relative mt-2">
+                  <input
+                    id="password"
+                    name="password"
+                    type={showPassword ? "text" : "password"}
+                    autoComplete="current-password"
+                    autoCapitalize="none"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    enterKeyHint="go"
+                    placeholder="Enter Password"
+                    value={password}
+                    onChange={(e) => {
+                      setPassword(e.target.value);
+                      setErrorMsg("");
+                    }}
+                    style={{ fontSize: "16px" }}
+                    className={`${inputClass} pr-12`}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((prev) => !prev)}
+                    aria-label={
+                      showPassword ? "Hide password" : "Show password"
+                    }
+                    className="absolute top-0 right-0 flex h-11 w-11 touch-manipulation items-center justify-center text-[#9CA3AF]"
+                  >
+                    {showPassword ? (
+                      <BsEye size={18} />
+                    ) : (
+                      <BsEyeSlash size={18} />
+                    )}
+                  </button>
+                </div>
+
+                {/* Opens the forgot password screen without leaving the page */}
+                <a
+                  href="#forgot-password"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setErrorMsg("");
+                    setView("forgot");
+                  }}
+                  className="mt-4 w-fit touch-manipulation py-1 text-[12px] font-medium text-[#1A7431]"
+                >
+                  Forgot Your Password?
+                </a>
+
+                <button
+                  type="submit"
+                  disabled={!canSubmit}
+                  className="mt-5 h-11 w-full touch-manipulation rounded-xl bg-[#1A7431] px-3 text-[14px] font-normal text-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Continue
+                </button>
+              </form>
+
+              {errorMsg && (
+                <p
+                  role="alert"
+                  className="mt-3 text-center text-[12px] font-normal text-[#E74C3C]"
+                >
+                  {errorMsg}
+                </p>
+              )}
+
+              <button
+                type="button"
+                onClick={handleBiometrics}
+                className="mx-auto mt-[clamp(20px,5dvh,32px)] flex touch-manipulation flex-col items-center gap-3 p-2"
+              >
+                <FaceIdIcon />
+                <span className="text-center text-[12px] font-normal text-[#6B7280]">
+                  Sign in with Biometrics
+                </span>
+              </button>
+            </>
+          )}
+        </main>
+      </div>
+    </div>
+  );
+};
+
+export default WelcomeBack;
