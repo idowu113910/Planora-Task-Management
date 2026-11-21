@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import first from "../assets/First onboarding image.svg";
 import second from "../assets/Second onboarding image.svg";
 import welcome from "../assets/welcome.svg";
@@ -25,10 +25,6 @@ const slides: Slide[] = [
   },
 ];
 
-type OnBoardingProps = {
-  onFinish?: () => void; // called by "Get Started" on the welcome screen, e.g. () => navigate("/login")
-};
-
 const Chevron = () => (
   <svg
     width="16"
@@ -47,7 +43,7 @@ const Chevron = () => (
   </svg>
 );
 
-const OnBoarding = ({ onFinish }: OnBoardingProps) => {
+const OnBoarding = () => {
   // 0..slides.length-1 = slides, slides.length = welcome screen (same page)
   const [step, setStep] = useState(0);
   const isWelcome = step === slides.length;
