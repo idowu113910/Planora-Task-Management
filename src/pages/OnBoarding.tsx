@@ -1,6 +1,6 @@
 import { useState } from "react";
-import first from "../assets/First onboarding image.svg";
-import second from "../assets/Second onboarding image.svg";
+import first from "../assets/first.svg";
+import second from "../assets/second.svg";
 import welcome from "../assets/welcome.svg";
 import { useNavigate } from "react-router-dom";
 
