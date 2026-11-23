@@ -1,6 +1,5 @@
 import { Navigate, Outlet } from "react-router-dom";
-// @ts-expect-error The JavaScript auth hook does not currently have TypeScript declarations.
-import { useAuth } from "./hooks/useAuth.js";
+import { useAuth } from "./hooks/useAuth";
 
 const ProtectedRoute = () => {
   const { user, loading } = useAuth();
