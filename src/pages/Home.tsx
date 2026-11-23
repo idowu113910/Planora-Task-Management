@@ -126,7 +126,7 @@ const ProgressRing = ({ percent }: { percent: number }) => {
   return (
     <div
       role="img"
-      aria-label={`${percent}% of today's tasks done`}
+      aria-label={`${percent}% of your tasks done`}
       // Scales with the screen: ~76px on a 320px phone, up to 112px on large phones
       className="relative h-[clamp(76px,24vw,112px)] w-[clamp(76px,24vw,112px)] shrink-0"
     >
@@ -582,10 +582,12 @@ const Home = ({ name = "Adaeze", completedTasks, totalTasks }: Props) => {
         (status.done[String(b.id)] ?? 0) - (status.done[String(a.id)] ?? 0),
     );
 
-  // Today's progress: finished today / everything dated today
-  const doneToday = doneTasks.filter((task) => task.date === todayISO).length;
-  const completed = completedTasks ?? doneToday;
-  const total = totalTasks ?? todayTasks.length + doneToday;
+  // Progress across all your tasks: the finished ones out of every task you
+  // have (finished and still open). It is worked out only from your saved
+  // tasks, not from today's date, so it stays the same after a refresh and
+  // after signing out and back in.
+  const completed = completedTasks ?? doneTasks.length;
+  const total = totalTasks ?? visibleTasks.length;
 
   // 0 when there are no tasks yet; never below 0 or above 100
   const percent =
@@ -647,7 +649,7 @@ const Home = ({ name = "Adaeze", completedTasks, totalTasks }: Props) => {
               <span className="text-[clamp(0.9375rem,4.2vw,1.125rem)] font-medium text-[#111827]">
                 {completed}
               </span>{" "}
-              {completed === 1 ? "task" : "tasks"} completed today
+              of {total} {total === 1 ? "task" : "tasks"} completed
             </p>
           </div>
 

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   BsArrowLeft,
   BsCheckCircle,
@@ -9,10 +10,14 @@ import {
   BsEyeSlash,
 } from "react-icons/bs";
 import planora from "../assets/planora.svg";
+import { markSignedIn } from "../auth";
 
 type Props = {
   // The returning user's first name, shown in the greeting
   name?: string;
+  // The returning user's email. The login endpoint needs it along with the
+  // password. If you don't pass it, it is read from localStorage (EMAIL_KEY).
+  email?: string;
 };
 
 // Which screen is showing. All screens live in this one component, so the page
@@ -27,6 +32,17 @@ const TOAST_DURATION = 5000;
 
 // The page users land on after signing in. Change this to your home page route.
 const HOME_PATH = "/home";
+
+// Backend login endpoint
+const LOGIN_URL = "https://planora-uliy.onrender.com/api/auth/login";
+
+// How long to wait for the login request before giving up (milliseconds).
+// Render's free plan can take up to a minute to wake a sleeping server.
+const LOGIN_TIMEOUT = 60000;
+
+// Where the signed-in user's email and token are kept in the browser
+const EMAIL_KEY = "planora_email";
+const TOKEN_KEY = "planora_token";
 
 const emptyDigits = () => Array<string>(CODE_LENGTH).fill("");
 
@@ -78,6 +94,23 @@ const FaceIdIcon = () => (
 const inputClass =
   "h-11 w-full min-w-0 rounded-xl border-[0.5px] border-[#E5EAF1] bg-white px-4 text-[16px] leading-normal font-normal text-[#111827] outline-none placeholder:text-[#C6CCD3] focus:border-[#1A7431]";
 
+// Reads localStorage without crashing when it is blocked (private mode etc.)
+const readStored = (key: string): string => {
+  try {
+    return localStorage.getItem(key) ?? "";
+  } catch {
+    return "";
+  }
+};
+
+const writeStored = (key: string, value: string) => {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // storage unavailable: the user just won't stay signed in after a reload
+  }
+};
+
 // TODO: replace the body with your real "send reset code" request. It should
 // throw an Error (with a readable message) if the code couldn't be sent.
 // The short wait below only stands in for the network call, so the loading
@@ -97,15 +130,66 @@ const verifyResetCode = async (
   await new Promise((resolve) => setTimeout(resolve, 1500));
 };
 
-// TODO: replace the body with your real sign-in request. It should throw an
-// Error (with a readable message) if the password is wrong.
-// The short wait below only stands in for the network call, so the loading
-// screen can be seen. Until you connect your backend, every password is accepted.
-const signInWithPassword = async (_password: string): Promise<void> => {
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+// Signs in with the backend. Sends { email, password } as JSON. Throws an
+// Error with a readable message if the email/password is wrong, the server
+// can't be reached, or it takes too long. Saves the token if the server
+// sends one back.
+const signInWithPassword = async (
+  email: string,
+  password: string,
+): Promise<void> => {
+  if (!email) {
+    throw new Error(
+      "We couldn't find your account email. Please sign up or log in again.",
+    );
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LOGIN_TIMEOUT);
+
+  let res: Response;
+  try {
+    res = await fetch(LOGIN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+      signal: controller.signal,
+    });
+  } catch (e) {
+    throw new Error(
+      e instanceof DOMException && e.name === "AbortError"
+        ? "The server took too long to respond. Please try again."
+        : "Couldn't reach the server. Check your connection and try again.",
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+
+  // The body might not be JSON (for example a gateway error page)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const data: any = await res.json().catch(() => null);
+
+  if (!res.ok) {
+    const message = data?.message ?? data?.error;
+    throw new Error(
+      typeof message === "string" && message
+        ? message
+        : res.status === 401 || res.status === 400
+          ? "Incorrect email or password."
+          : "Sign in failed. Please try again.",
+    );
+  }
+
+  // Keep the token for later API calls. Adjust the field names to match what
+  // your backend returns.
+  const token = data?.token ?? data?.accessToken ?? data?.data?.token;
+  if (typeof token === "string" && token) writeStored(TOKEN_KEY, token);
+  writeStored(EMAIL_KEY, email);
 };
 
-const WelcomeBack = ({ name = "Adaeze" }: Props) => {
+const WelcomeBack = ({ name = "Adaeze", email: emailProp }: Props) => {
+  const navigate = useNavigate();
+
   const [view, setView] = useState<View>("signin");
 
   // Sign in screen
@@ -128,7 +212,7 @@ const WelcomeBack = ({ name = "Adaeze" }: Props) => {
   // "Account Verified Successfully" toast
   const [showToast, setShowToast] = useState(false);
 
-  // Error shown on the forgot password / reset code screens
+  // Error shown on the sign in / forgot password / reset code screens
   const [errorMsg, setErrorMsg] = useState("");
 
   // The Continue button only works once something has been typed
@@ -171,8 +255,14 @@ const WelcomeBack = ({ name = "Adaeze" }: Props) => {
     setErrorMsg("");
     setView("loading");
     try {
-      await signInWithPassword(password);
-      window.location.assign(HOME_PATH);
+      const accountEmail = (emailProp ?? readStored(EMAIL_KEY)).trim();
+      await signInWithPassword(accountEmail, password);
+      // Tell the app someone is signed in. Without this, ProtectedRoute would
+      // send them straight back to the sign in page.
+      markSignedIn();
+      // Opens the home page inside the app (no full page reload). "replace"
+      // means the browser's Back button won't return to the sign in screen.
+      navigate(HOME_PATH, { replace: true });
     } catch (e) {
       setErrorMsg(
         e instanceof Error && e.message

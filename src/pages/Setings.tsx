@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
+import { useNavigate } from "react-router-dom";
 import profile from "../assets/Profile.svg";
 import notifications from "../assets/NOTIFCATIONS.svg";
 import theme from "../assets/Theme.svg";
@@ -304,6 +305,22 @@ const changePassword = async (
   } catch {
     return { ok: false, reason: "failed" };
   }
+};
+
+/* ========================================================================== */
+/*                               SIGNING OUT                                  */
+/* ========================================================================== */
+
+// Where the person lands after signing out
+const SIGN_IN_PATH = "/signin";
+
+// Placeholder for "Sign out everywhere". When you add a backend, call its
+// sign-out endpoint here so every session on every device is ended, for
+// example: await fetch(`${API}/auth/sign-out`, { method: "POST",
+// credentials: "include" }). Throw an error if it fails, and the person
+// stays on this screen.
+const signOutEverywhere = async (): Promise<void> => {
+  // TODO: connect to your sign-out endpoint
 };
 
 /* ========================================================================== */
@@ -681,10 +698,27 @@ const securitySwitches = [
 const SecurityScreen = ({
   onBack,
   onOpenPassword,
+  onSignOutAll,
 }: {
   onBack: () => void;
   onOpenPassword: () => void;
+  // Called when "Sign out all" is pressed. Resolves once signed out.
+  onSignOutAll: () => Promise<void>;
 }) => {
+  // true while signing out, so the button can't be pressed twice
+  const [signingOut, setSigningOut] = useState(false);
+
+  const handleSignOutAll = async () => {
+    if (signingOut) return;
+    setSigningOut(true);
+    try {
+      await onSignOutAll();
+    } catch {
+      // sign-out failed: stay here so it can be tried again
+      setSigningOut(false);
+    }
+  };
+
   // Which switches are on. Both start off, as in the design.
   const [enabled, setEnabled] = useState<Record<string, boolean>>({
     biometrics: false,
@@ -793,7 +827,9 @@ const SecurityScreen = ({
 
             <button
               type="button"
-              className="flex min-h-9 shrink-0 whitespace-nowrap touch-manipulation items-center gap-1 rounded-lg bg-[#F1F4F8] px-3 text-[0.875rem] font-normal text-[#111827]"
+              onClick={handleSignOutAll}
+              disabled={signingOut}
+              className="flex min-h-9 shrink-0 whitespace-nowrap touch-manipulation items-center gap-1 rounded-lg bg-[#F1F4F8] px-3 text-[0.875rem] font-normal text-[#111827] disabled:cursor-not-allowed disabled:opacity-50"
             >
               Sign out all
               <MdOutlineKeyboardArrowRight size={16} aria-hidden="true" />
@@ -1691,6 +1727,7 @@ const Setings = () => {
   const [profileData, setProfileData] = useState<ProfileData>(loadProfile);
   const [isEditing, setIsEditing] = useState(false);
   const [toast, setToast] = useState("");
+  const navigate = useNavigate();
 
   const closeEdit = useCallback(() => setIsEditing(false), []);
 
@@ -1740,6 +1777,11 @@ const Setings = () => {
         <SecurityScreen
           onBack={() => setScreen("settings")}
           onOpenPassword={() => setScreen("password")}
+          onSignOutAll={async () => {
+            await signOutEverywhere();
+            // replace: the Back button can't return to the signed-in pages
+            navigate(SIGN_IN_PATH, { replace: true });
+          }}
         />
       ) : screen === "password" ? (
         <PasswordScreen
