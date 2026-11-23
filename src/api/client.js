@@ -14,7 +14,7 @@ let queue = [];
 const SKIP_REFRESH = [
   "/auth/refresh",
   "/auth/login",
-  "/auth/register",
+  "/auth/signup",
   "/auth/logout",
 ];
 
@@ -60,7 +60,7 @@ api.interceptors.response.use(
 // Auth endpoints, all resolved against baseURL (.../api)
 export const authApi = {
   login: (credentials, config) => api.post("/auth/login", credentials, config), // POST
-  register: (data) => api.post("/auth/register", data), // POST
+  signup: (data) => api.post("/auth/signup", data), // POST
   refresh: () => api.post("/auth/refresh"), // POST
   me: () => api.get("/auth/me"), // GET
   logout: () => api.post("/auth/logout"), // POST
