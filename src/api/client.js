@@ -15,6 +15,7 @@ const SKIP_REFRESH = [
   "/auth/refresh",
   "/auth/login",
   "/auth/signup",
+  "/auth/oauth",
   "/auth/logout",
 ];
 
@@ -57,10 +58,13 @@ api.interceptors.response.use(
   },
 );
 
-// Auth endpoints, all resolved against baseURL (.../api)
+// Auth endpoints, all resolved against baseURL (.../api).
+// The optional `config` argument lets callers pass axios options, such as a
+// longer timeout for Render's cold start.
 export const authApi = {
   login: (credentials, config) => api.post("/auth/login", credentials, config), // POST
-  signup: (data) => api.post("/auth/signup", data), // POST
+  signup: (data, config) => api.post("/auth/signup", data, config), // POST
+  oauth: (data, config) => api.post("/auth/oauth", data, config), // POST (Google / Apple)
   refresh: () => api.post("/auth/refresh"), // POST
   me: () => api.get("/auth/me"), // GET
   logout: () => api.post("/auth/logout"), // POST
