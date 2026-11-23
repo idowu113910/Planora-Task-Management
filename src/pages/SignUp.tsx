@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import axios from "axios";
 import {
   BsCheckCircleFill,
   BsCircle,
@@ -10,7 +11,7 @@ import planora from "../assets/planora.svg";
 import { FaApple } from "react-icons/fa6";
 import { FcGoogle } from "react-icons/fc";
 import { useNavigate } from "react-router-dom";
-import { markSignedIn } from "../auth";
+import { authApi } from "../api/client";
 
 // Where to go after signing up with email: the verification page, which then
 // takes the person to the home page once their code is right
@@ -19,21 +20,23 @@ const VERIFY_PATH = "/verify";
 // Where to go after signing in with Apple or Google (no code needed)
 const HOME_PATH = "/home";
 
-// Your backend's endpoints
-const SIGNUP_URL = "https://planora-uliy.onrender.com/api/auth/signup";
-const OAUTH_URL = "https://planora-uliy.onrender.com/api/auth/oauth";
-
 // Free hosting (like Render) puts the server to sleep when it is not used, and
 // the first request can take up to a minute while it wakes up. We wait that long.
 const REQUEST_TIMEOUT_MS = 60000;
 
-// Where the signed-in user's email and token are kept in the browser. The
-// WelcomeBack (sign in) screen reads the same keys.
+// TEMPORARY, for debugging: when true, a failed request shows the server's raw
+// answer on screen (for example: 400: {"message":"Validation failed",...}) so
+// you can see exactly which field it rejected. Set to false before launch.
+const SHOW_RAW_ERRORS = true;
+
+// Where the returning user's email is kept in the browser. The WelcomeBack
+// (sign in) screen reads the same key. Tokens are NOT stored here: the backend
+// keeps the session in httpOnly cookies.
 const EMAIL_KEY = "planora_email";
-const TOKEN_KEY = "planora_token";
 
 // Apple and Google sign-in need these. Create them in the Google Cloud Console
-// and the Apple Developer portal, then put them in your .env file:
+// and the Apple Developer portal, then put them in your .env file AND in your
+// hosting dashboard (they are read when the app is built):
 //   VITE_GOOGLE_CLIENT_ID=...
 //   VITE_APPLE_CLIENT_ID=...        (your Apple "Services ID")
 //   VITE_APPLE_REDIRECT_URI=...     (optional, defaults to this site's address)
@@ -58,6 +61,7 @@ type SignUpDetails = {
   lastName: string;
   email: string;
   password: string;
+  confirmPassword: string;
 };
 
 // Thrown when the person closes the Apple / Google window on purpose, so we
@@ -69,108 +73,102 @@ const writeStored = (key: string, value: string) => {
   try {
     localStorage.setItem(key, value);
   } catch {
-    // storage unavailable: the person just won't stay signed in after a reload
+    // storage unavailable: the greeting screen just won't remember the email
   }
 };
+
+// THE ONE PLACE to match your backend's field names. The backend now expects
+// firstName, lastName, email, password and confirmPassword. If your backend
+// spells any of them differently (for example first_name), change it here.
+const buildSignUpPayload = (details: SignUpDetails) => ({
+  firstName: details.firstName,
+  lastName: details.lastName,
+  email: details.email,
+  password: details.password,
+  confirmPassword: details.confirmPassword,
+});
 
 // Finds the readable message in whatever shape the server sends its errors
 const readServerMessage = (data: unknown): string | null => {
   if (!data || typeof data !== "object") return null;
   const body = data as Record<string, unknown>;
 
+  // Specific reasons first (Joi / Zod / express-validator style lists)
+  for (const key of ["errors", "details"]) {
+    const list = body[key];
+    if (Array.isArray(list) && list.length > 0) {
+      const first: unknown = list[0];
+      if (typeof first === "string") return first;
+      if (first && typeof first === "object") {
+        const item = first as Record<string, unknown>;
+        const msg = item.message ?? item.msg;
+        if (typeof msg === "string" && msg) return msg;
+      }
+    }
+  }
+
   for (const key of ["message", "error", "msg"]) {
     const value = body[key];
     if (typeof value === "string" && value.trim()) return value;
   }
-
-  if (Array.isArray(body.errors)) {
-    const first: unknown = body.errors[0];
-    if (typeof first === "string") return first;
-    if (first && typeof first === "object") {
-      const msg = (first as Record<string, unknown>).message;
-      if (typeof msg === "string") return msg;
-    }
-  }
   return null;
 };
 
-// Sends JSON to the backend and returns whatever JSON it answers with.
-// Throws an Error with a readable message if the request fails.
-const postJson = async (
-  url: string,
-  body: unknown,
-  fallbackMessage: string,
-): Promise<unknown> => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+// Turns any failed request into a readable message for the person
+const getApiError = (e: unknown, fallback: string): string => {
+  if (axios.isAxiosError(e)) {
+    // Always log the full server answer so it can be read in the console
+    console.error("Request failed:", e.response?.status, e.response?.data);
 
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-  } catch (error) {
-    throw new Error(
-      error instanceof DOMException && error.name === "AbortError"
-        ? "The server is taking too long to respond. Please try again."
-        : "Can't reach the server. Check your internet connection and try again.",
-    );
-  } finally {
-    clearTimeout(timer);
+    // The request timed out (server still waking up, or very slow network)
+    if (e.code === "ECONNABORTED") {
+      return "The server is taking too long to respond. Please try again.";
+    }
+    // No response at all: offline, blocked by CORS, or server down
+    if (!e.response) {
+      return "Can't reach the server. Check your internet connection and try again.";
+    }
+
+    const { status, data } = e.response;
+
+    if (SHOW_RAW_ERRORS) return `${status}: ${JSON.stringify(data)}`;
+
+    const serverMessage = readServerMessage(data);
+    if (serverMessage) return serverMessage;
+    if (status === 409) return "An account with this email already exists.";
+    if (status === 404) return "This feature isn't available right now.";
+    if (status >= 500) {
+      return "Something went wrong on our side. Please try again shortly.";
+    }
   }
-
-  // The body may be empty or not JSON, which is fine
-  let data: unknown = null;
-  try {
-    data = await response.json();
-  } catch {
-    data = null;
-  }
-
-  if (!response.ok) {
-    throw new Error(
-      readServerMessage(data) ??
-        (response.status === 409
-          ? "An account with this email already exists."
-          : response.status >= 500
-            ? "Something went wrong on our side. Please try again shortly."
-            : fallbackMessage),
-    );
-  }
-
-  return data;
+  return fallback;
 };
 
-// Looks for the token and the email in the usual places a server puts them.
-// Change the names here if your backend uses different ones.
-const readSession = (data: unknown): { token?: string; email?: string } => {
-  if (!data || typeof data !== "object") return {};
-  const body = data as Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
-  const token = body.token ?? body.accessToken ?? body.data?.token;
+// Looks for the person's email in the usual places a server puts it
+const readEmail = (data: unknown): string | undefined => {
+  if (!data || typeof data !== "object") return undefined;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const body = data as Record<string, any>;
   const email = body.user?.email ?? body.data?.user?.email ?? body.email;
-  return {
-    token: typeof token === "string" && token ? token : undefined,
-    email: typeof email === "string" && email ? email : undefined,
-  };
+  return typeof email === "string" && email ? email : undefined;
 };
 
-// Sends the sign-up to the backend. Throws an Error with a readable message if
-// it fails, and the person stays on this screen with that message shown.
+// Sends the sign-up to the backend. The backend sets the session cookies
+// itself (the shared client sends them along). Throws an Error with a readable
+// message if it fails, and the person stays on this screen with it shown.
 const signUpWithEmail = async (details: SignUpDetails): Promise<void> => {
-  const data = await postJson(
-    SIGNUP_URL,
-    details,
-    "We couldn't create your account. Please check your details and try again.",
-  );
-  // Some backends sign the person in straight away. Keep the token if so.
-  const { token } = readSession(data);
-  if (token) writeStored(TOKEN_KEY, token);
+  try {
+    await authApi.signup(buildSignUpPayload(details), {
+      timeout: REQUEST_TIMEOUT_MS,
+    });
+  } catch (e) {
+    throw new Error(
+      getApiError(
+        e,
+        "We couldn't create your account. Please check your details and try again.",
+      ),
+    );
+  }
   // The sign in screen needs the email later
   writeStored(EMAIL_KEY, details.email);
 };
@@ -295,8 +293,8 @@ const getAppleToken = async (): Promise<{
 };
 
 // Signs in or signs up with Apple or Google. Gets the token from the provider,
-// sends it to your backend's oauth endpoint, and keeps the session it returns.
-// Sends: { provider: "google" | "apple", token, user? }
+// sends it to your backend's oauth endpoint (the backend sets the session
+// cookies). Sends: { provider: "google" | "apple", token, user? }
 const signInWithProvider = async (provider: Provider): Promise<void> => {
   let token: string;
   let user: unknown;
@@ -307,15 +305,21 @@ const signInWithProvider = async (provider: Provider): Promise<void> => {
     ({ token, user } = await getAppleToken());
   }
 
-  const data = await postJson(
-    OAUTH_URL,
-    { provider, token, ...(user ? { user } : {}) },
-    `We couldn't sign you in with ${provider === "google" ? "Google" : "Apple"}. Please try again.`,
-  );
-
-  const session = readSession(data);
-  if (session.token) writeStored(TOKEN_KEY, session.token);
-  if (session.email) writeStored(EMAIL_KEY, session.email);
+  try {
+    const res = await authApi.oauth(
+      { provider, token, ...(user ? { user } : {}) },
+      { timeout: REQUEST_TIMEOUT_MS },
+    );
+    const email = readEmail(res.data);
+    if (email) writeStored(EMAIL_KEY, email);
+  } catch (e) {
+    throw new Error(
+      getApiError(
+        e,
+        `We couldn't sign you in with ${provider === "google" ? "Google" : "Apple"}. Please try again.`,
+      ),
+    );
+  }
 };
 
 type Field = {
@@ -448,6 +452,7 @@ const SignUp = () => {
         lastName: values.lastName.trim(),
         email,
         password: values.password,
+        confirmPassword: values.confirmPassword,
       });
       // On to the verification page. It gets the email address, so it can
       // send the 6-digit code straight away.
@@ -463,20 +468,16 @@ const SignUp = () => {
     }
   };
 
-  // Apple / Google: opens the provider's window first (the form stays on
-  // screen behind it), then shows the loading screen while the backend
-  // checks the token, then opens the home page.
+  // Apple / Google: opens the provider's window, then shows the loading screen
+  // while the backend checks the token, then opens the home page.
   const handleProvider = async (provider: Provider) => {
     if (loading) return;
     setErrorMsg("");
     try {
-      // The provider's window opens as its own window, so the loader can show
-      // behind it straight away
       setLoading(true);
       await signInWithProvider(provider);
-      // Tell the app someone is signed in. Without this, ProtectedRoute would
-      // send them straight back to the sign in page.
-      markSignedIn();
+      // The session cookies are now set. ProtectedRoute confirms the session
+      // with /auth/me when the home page opens.
       navigate(HOME_PATH, { replace: true });
     } catch (error) {
       setLoading(false);
@@ -682,7 +683,7 @@ const SignUp = () => {
             {errorMsg && (
               <p
                 role="alert"
-                className="text-center text-[12px] font-normal text-[#E74C3C]"
+                className="text-center text-[12px] font-normal break-words text-[#E74C3C]"
               >
                 {errorMsg}
               </p>
