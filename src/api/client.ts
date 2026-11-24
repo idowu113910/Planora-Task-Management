@@ -62,16 +62,19 @@ api.interceptors.response.use(
       isRefreshing = true;
       try {
         await authApi.refresh();
-        queue.forEach((p) => p.resolve());
+        isRefreshing = false;
+        const currentQueue = [...queue];
+        queue = [];
+        currentQueue.forEach((p) => p.resolve());
         return api(original);
       } catch (err) {
-        queue.forEach((p) => p.reject(err));
+        isRefreshing = false;
+        const currentQueue = [...queue];
+        queue = [];
+        currentQueue.forEach((p) => p.reject(err));
         // No redirect here: ProtectedRoute sends the user to /signin when
         // /auth/me fails, so public pages keep working.
         return Promise.reject(err);
-      } finally {
-        queue = [];
-        isRefreshing = false;
       }
     }
 
