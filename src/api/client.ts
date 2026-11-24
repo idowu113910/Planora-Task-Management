@@ -1,8 +1,14 @@
 import axios from "axios";
 import type { AxiosRequestConfig, InternalAxiosRequestConfig } from "axios";
 
+// If VITE_API_URL is set, requests go straight to that server.
+// If it is empty, requests go to "/api" on the same site (the Vercel rewrite
+// in vercel.json forwards them to the backend). Same-site requests are the
+// most reliable way to keep login cookies working in Safari.
+const API_ORIGIN = (import.meta.env.VITE_API_URL ?? "") as string;
+
 const api = axios.create({
-  baseURL: `${import.meta.env.VITE_API_URL}/api`,
+  baseURL: `${API_ORIGIN}/api`,
   withCredentials: true, // sends the httpOnly session cookies
 });
 

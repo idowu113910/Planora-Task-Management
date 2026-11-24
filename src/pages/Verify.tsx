@@ -8,11 +8,11 @@ import { showToast } from "../layout/Toast";
 // Which screen is showing. All screens live in this one component.
 //   email   - asks for the email address (only if it wasn't passed in)
 //   loading - spinner while a code is sent or checked
-//   code    - the 6 boxes
+//   code    - the 4 boxes
 type View = "email" | "loading" | "code";
 
 // How many digits the verification code has
-const CODE_LENGTH = 6;
+const CODE_LENGTH = 4;
 
 // How long to wait before a new code can be requested (seconds)
 const RESEND_SECONDS = 30;
@@ -26,105 +26,22 @@ const emptyDigits = () => Array<string>(CODE_LENGTH).fill("");
 const inputClass =
   "h-11 w-full min-w-0 rounded-xl border-[0.5px] border-[#E5EAF1] bg-white px-4 text-[16px] leading-normal font-normal text-[#111827] outline-none placeholder:text-[#C6CCD3] focus:border-[#1A7431]";
 
-// Your backend's endpoints
-const SEND_CODE_URL =
-  "https://planora-uliy.onrender.com/api/auth/send-verification-otp";
-const VERIFY_URL = "https://planora-uliy.onrender.com/api/auth/verify-email";
-
-// Free hosting (like Render) puts the server to sleep when it is not used, and
-// the first request can take up to a minute while it wakes up. We wait that long.
-const REQUEST_TIMEOUT_MS = 60000;
-
-// Finds the readable message in whatever shape the server sends its errors
-const readServerMessage = (data: unknown): string | null => {
-  if (!data || typeof data !== "object") return null;
-  const body = data as Record<string, unknown>;
-
-  for (const key of ["message", "error", "msg"]) {
-    const value = body[key];
-    if (typeof value === "string" && value.trim()) return value;
-  }
-
-  if (Array.isArray(body.errors)) {
-    const first: unknown = body.errors[0];
-    if (typeof first === "string") return first;
-    if (first && typeof first === "object") {
-      const msg = (first as Record<string, unknown>).message;
-      if (typeof msg === "string") return msg;
-    }
-  }
-  return null;
+// TODO: replace the body with your real "send verification code" request. It
+// should email a new 4-digit code to the address, and throw an Error (with a
+// readable message) if it couldn't be sent. A browser can't send email by
+// itself, so no email goes out until this is connected to your backend.
+// The short wait below only stands in for the network call, so the loading
+// screen can be seen while you build the backend.
+const sendVerificationCode = async (_email: string): Promise<void> => {
+  await new Promise((resolve) => setTimeout(resolve, 1500));
 };
 
-// Sends a POST with JSON to the backend. Throws an Error with a readable
-// message if it fails (no connection, too slow, or the server said no).
-const postJson = async (
-  url: string,
-  body: Record<string, string>,
-  fallbackMessage: string,
-): Promise<void> => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
-      // Lets the server set a session cookie. If your server does not use
-      // cookies, this can be removed.
-      credentials: "include",
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-  } catch (error) {
-    throw new Error(
-      error instanceof DOMException && error.name === "AbortError"
-        ? "The server is taking too long to respond. Please try again."
-        : "Can't reach the server. Check your internet connection and try again.",
-    );
-  } finally {
-    clearTimeout(timer);
-  }
-
-  // The body may be empty or not JSON, which is fine
-  let data: unknown = null;
-  try {
-    data = await response.json();
-  } catch {
-    data = null;
-  }
-
-  if (!response.ok) {
-    throw new Error(
-      readServerMessage(data) ??
-        (response.status === 429
-          ? "Too many attempts. Please wait a moment and try again."
-          : response.status >= 500
-            ? "Something went wrong on our side. Please try again shortly."
-            : fallbackMessage),
-    );
-  }
+// TODO: replace the body with your real "check the code" request. It should
+// throw an Error (with a readable message) if the code is wrong or expired.
+// Until you connect your backend, every code is accepted.
+const verifyCode = async (_email: string, _code: string): Promise<void> => {
+  await new Promise((resolve) => setTimeout(resolve, 1500));
 };
-
-// Asks the backend to email a new 6-digit code to the address
-const sendVerificationCode = (email: string): Promise<void> =>
-  postJson(
-    SEND_CODE_URL,
-    { email },
-    "Couldn't send the code. Please check the email address and try again.",
-  );
-
-// Checks the code with the backend. Throws if it is wrong or expired.
-const verifyCode = (email: string, code: string): Promise<void> =>
-  postJson(
-    VERIFY_URL,
-    { email, otp: code },
-    "That code didn't work. Please check it and try again.",
-  );
 
 const Verify = () => {
   const navigate = useNavigate();
@@ -358,7 +275,7 @@ const Verify = () => {
                 {/* One square box per digit. Each box keeps its text at 24px,
                     so phones don't zoom in when a box is tapped. */}
                 <div
-                  className="grid gap-2 min-[360px]:gap-3"
+                  className="grid gap-3"
                   style={{
                     gridTemplateColumns: `repeat(${CODE_LENGTH}, minmax(0, 1fr))`,
                   }}
