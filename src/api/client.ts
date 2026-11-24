@@ -1,21 +1,68 @@
 import axios from "axios";
 import type { AxiosRequestConfig, InternalAxiosRequestConfig } from "axios";
 
-// If VITE_API_URL is set, requests go straight to that server.
-// If it is empty, requests go to "/api" on the same site (the Vercel rewrite
-// in vercel.json forwards them to the backend). Same-site requests are the
-// most reliable way to keep login cookies working in Safari.
 const API_ORIGIN = (import.meta.env.VITE_API_URL ?? "") as string;
+
+// Where the tokens are kept in the browser. Every page must use these two keys.
+const ACCESS_KEY = "accessToken";
+const REFRESH_KEY = "refreshToken";
 
 const api = axios.create({
   baseURL: `${API_ORIGIN}/api`,
-  withCredentials: true, // sends the httpOnly session cookies
+  withCredentials: true,
 });
 
-// A request config that remembers whether it was already retried once
+const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+  typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : undefined;
+
+// Finds the tokens in the backend's answer (whatever shape it uses) and keeps
+// them where the requests below read them. Call it with `res.data` right after
+// a successful sign up, sign in or refresh. Returns true if an access token
+// was found.
+export const saveTokens = (responseData: unknown): boolean => {
+  const body = asRecord(responseData);
+  const data = asRecord(body?.data);
+  const layers = [body, data, asRecord(body?.tokens), asRecord(data?.tokens)];
+
+  const pick = (...keys: string[]): string | undefined => {
+    for (const layer of layers) {
+      if (!layer) continue;
+      for (const key of keys) {
+        const value = layer[key];
+        if (typeof value === "string" && value) return value;
+      }
+    }
+    return undefined;
+  };
+
+  const accessToken = pick("accessToken", "access_token", "token");
+  const refreshToken = pick("refreshToken", "refresh_token");
+
+  if (accessToken) localStorage.setItem(ACCESS_KEY, accessToken);
+  if (refreshToken) localStorage.setItem(REFRESH_KEY, refreshToken);
+
+  return Boolean(accessToken);
+};
+
+// Use this when the user logs out
+export const clearTokens = () => {
+  localStorage.removeItem(ACCESS_KEY);
+  localStorage.removeItem(REFRESH_KEY);
+};
+
+// Attach accessToken to every request so /auth/me knows who is signed in
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem(ACCESS_KEY);
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
 type RetryableConfig = InternalAxiosRequestConfig & { _retry?: boolean };
 
-// Requests that arrived while a refresh was already running
 type QueueItem = {
   resolve: () => void;
   reject: (error: unknown) => void;
@@ -24,9 +71,6 @@ type QueueItem = {
 let isRefreshing = false;
 let queue: QueueItem[] = [];
 
-// Endpoints that should never trigger a refresh attempt.
-// /auth/me is intentionally NOT here: if its token expired, it should refresh
-// and then retry automatically.
 const SKIP_REFRESH = [
   "/auth/refresh",
   "/auth/login",
@@ -38,21 +82,27 @@ const SKIP_REFRESH = [
 api.interceptors.response.use(
   (res) => res,
   async (error: unknown) => {
-    // Not a normal HTTP error (or no request info): pass it along untouched
     if (!axios.isAxiosError(error) || !error.config) {
       return Promise.reject(error);
     }
 
     const original = error.config as RetryableConfig;
-
     const shouldSkip = SKIP_REFRESH.some((path) =>
       original.url?.includes(path),
     );
 
-    if (error.response?.status === 401 && !original._retry && !shouldSkip) {
+    // Without a refresh token there is nothing to refresh with. Asking anyway
+    // only gives a 400 error, so the 401 is passed on as "not signed in".
+    const hasRefreshToken = Boolean(localStorage.getItem(REFRESH_KEY));
+
+    if (
+      error.response?.status === 401 &&
+      !original._retry &&
+      !shouldSkip &&
+      hasRefreshToken
+    ) {
       original._retry = true;
 
-      // A refresh is already running: wait for it, then retry this request
       if (isRefreshing) {
         return new Promise<void>((resolve, reject) => {
           queue.push({ resolve, reject });
@@ -61,7 +111,11 @@ api.interceptors.response.use(
 
       isRefreshing = true;
       try {
-        await authApi.refresh();
+        const res = await authApi.refresh();
+        if (!saveTokens(res.data)) {
+          throw new Error("The refresh answer had no access token");
+        }
+
         isRefreshing = false;
         const currentQueue = [...queue];
         queue = [];
@@ -72,8 +126,7 @@ api.interceptors.response.use(
         const currentQueue = [...queue];
         queue = [];
         currentQueue.forEach((p) => p.reject(err));
-        // No redirect here: ProtectedRoute sends the user to /signin when
-        // /auth/me fails, so public pages keep working.
+        clearTokens();
         return Promise.reject(err);
       }
     }
@@ -82,7 +135,6 @@ api.interceptors.response.use(
   },
 );
 
-// What each endpoint expects
 export type LoginPayload = {
   email: string;
   password: string;
@@ -102,19 +154,20 @@ export type OAuthPayload = {
   user?: unknown;
 };
 
-// Auth endpoints, all resolved against baseURL (.../api).
-// The optional `config` argument lets callers pass axios options, such as a
-// longer timeout for Render's cold start.
 export const authApi = {
   login: (credentials: LoginPayload, config?: AxiosRequestConfig) =>
-    api.post("/auth/login", credentials, config), // POST
+    api.post("/auth/login", credentials, config),
   signup: (data: SignupPayload, config?: AxiosRequestConfig) =>
-    api.post("/auth/signup", data, config), // POST
+    api.post("/auth/signup", data, config),
   oauth: (data: OAuthPayload, config?: AxiosRequestConfig) =>
-    api.post("/auth/oauth", data, config), // POST (Google / Apple)
-  refresh: () => api.post("/auth/refresh"), // POST
-  me: () => api.get("/auth/me"), // GET
-  logout: () => api.post("/auth/logout"), // POST
+    api.post("/auth/oauth", data, config),
+  // Sends refreshToken in the body as required by your backend validation
+  refresh: () =>
+    api.post("/auth/refresh", {
+      refreshToken: localStorage.getItem(REFRESH_KEY) ?? "",
+    }),
+  me: () => api.get("/auth/me"),
+  logout: () => api.post("/auth/logout"),
 };
 
 export default api;
