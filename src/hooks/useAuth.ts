@@ -14,10 +14,15 @@ export function useAuth() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (!localStorage.getItem("accessToken")) {
+      setUser(null);
+      setLoading(false);
+      return;
+    }
+
     authApi
       .me()
-      // If /me wraps the user (e.g. { user: {...} }), use res.data.user here
-      .then((res) => setUser(res.data))
+      .then((res) => setUser(res.data?.user ?? res.data))
       .catch(() => setUser(null))
       .finally(() => setLoading(false));
   }, []);
