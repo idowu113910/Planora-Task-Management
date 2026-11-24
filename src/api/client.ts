@@ -3,7 +3,7 @@ import type { AxiosRequestConfig, InternalAxiosRequestConfig } from "axios";
 
 const API_ORIGIN = (import.meta.env.VITE_API_URL ?? "") as string;
 
-// Where the tokens are kept in the browser. Every page must use these two keys.
+// Where the tokens are kept in the browser
 const ACCESS_KEY = "accessToken";
 const REFRESH_KEY = "refreshToken";
 
@@ -17,10 +17,7 @@ const asRecord = (value: unknown): Record<string, unknown> | undefined =>
     ? (value as Record<string, unknown>)
     : undefined;
 
-// Finds the tokens in the backend's answer (whatever shape it uses) and keeps
-// them where the requests below read them. Call it with `res.data` right after
-// a successful sign up, sign in or refresh. Returns true if an access token
-// was found.
+// Finds the tokens in the backend's answer and saves them to localStorage
 export const saveTokens = (responseData: unknown): boolean => {
   const body = asRecord(responseData);
   const data = asRecord(body?.data);
@@ -46,13 +43,13 @@ export const saveTokens = (responseData: unknown): boolean => {
   return Boolean(accessToken);
 };
 
-// Use this when the user logs out
 export const clearTokens = () => {
   localStorage.removeItem(ACCESS_KEY);
   localStorage.removeItem(REFRESH_KEY);
 };
 
-// Attach accessToken to every request so /auth/me knows who is signed in
+// 1. ATTACH ACCESS TOKEN: Ensures /auth/me and all authenticated routes
+// always send the Bearer token in the header.
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem(ACCESS_KEY);
   if (token) {
@@ -91,8 +88,6 @@ api.interceptors.response.use(
       original.url?.includes(path),
     );
 
-    // Without a refresh token there is nothing to refresh with. Asking anyway
-    // only gives a 400 error, so the 401 is passed on as "not signed in".
     const hasRefreshToken = Boolean(localStorage.getItem(REFRESH_KEY));
 
     if (
@@ -155,13 +150,21 @@ export type OAuthPayload = {
 };
 
 export const authApi = {
-  login: (credentials: LoginPayload, config?: AxiosRequestConfig) =>
-    api.post("/auth/login", credentials, config),
-  signup: (data: SignupPayload, config?: AxiosRequestConfig) =>
-    api.post("/auth/signup", data, config),
-  oauth: (data: OAuthPayload, config?: AxiosRequestConfig) =>
-    api.post("/auth/oauth", data, config),
-  // Sends refreshToken in the body as required by your backend validation
+  login: async (credentials: LoginPayload, config?: AxiosRequestConfig) => {
+    const res = await api.post("/auth/login", credentials, config);
+    saveTokens(res.data);
+    return res;
+  },
+  signup: async (data: SignupPayload, config?: AxiosRequestConfig) => {
+    const res = await api.post("/auth/signup", data, config);
+    saveTokens(res.data);
+    return res;
+  },
+  oauth: async (data: OAuthPayload, config?: AxiosRequestConfig) => {
+    const res = await api.post("/auth/oauth", data, config);
+    saveTokens(res.data);
+    return res;
+  },
   refresh: () =>
     api.post("/auth/refresh", {
       refreshToken: localStorage.getItem(REFRESH_KEY) ?? "",
