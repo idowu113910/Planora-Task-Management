@@ -380,47 +380,59 @@ const forgotPassword = async (email: string): Promise<void> => {
   );
 };
 
-// 2. Checks the code. Throws if it is wrong or expired. Returns a reset token
-// if the server gives one (it is then sent along in step 3).
+// 2. Checks the 4-digit code. Throws if it is wrong or expired. The server
+// answers with a resetToken, which step 3 needs.
 const verifyResetCode = async (
   email: string,
   code: string,
-): Promise<string | undefined> => {
+): Promise<string> => {
   const data = await postJson(
     VERIFY_RESET_CODE_URL,
-    { email, otp: code },
+    { email, code },
     "That code didn't work. Please check it and try again.",
   );
-  return readResetToken(data);
+  const resetToken = readResetToken(data);
+  if (!resetToken) {
+    throw new Error("We couldn't verify the code. Please try again.");
+  }
+  return resetToken;
 };
 
-// 3. Sets the new password
-const resetPassword = async (details: {
-  email: string;
-  code: string;
-  newPassword: string;
-  resetToken?: string;
-}): Promise<void> => {
+// 3. Sets the new password, using the resetToken from step 2
+const resetPassword = async (
+  resetToken: string,
+  newPassword: string,
+): Promise<void> => {
   await postJson(
     RESET_PASSWORD_URL,
-    {
-      email: details.email,
-      otp: details.code,
-      newPassword: details.newPassword,
-      ...(details.resetToken ? { resetToken: details.resetToken } : {}),
-    },
+    { resetToken, newPassword, confirmPassword: newPassword },
     "We couldn't reset your password. Please try again.",
   );
 };
 
 // Changes the password of the signed-in person (needs their current password)
 const changePassword = async (current: string, next: string): Promise<void> => {
-  await postJson(
+  const data = await postJson(
     CHANGE_PASSWORD_URL,
-    { currentPassword: current, newPassword: next },
+    { currentPassword: current, newPassword: next, confirmPassword: next },
     "We couldn't change your password. Check your current password and try again.",
     true,
   );
+
+  // The server revokes the old tokens and sends back fresh ones. Keep the new
+  // access token, or the next request would be refused.
+  if (data && typeof data === "object") {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const body = data as Record<string, any>;
+    const fresh = body.accessToken ?? body.token ?? body.data?.accessToken;
+    if (typeof fresh === "string" && fresh) {
+      try {
+        localStorage.setItem(TOKEN_KEY, fresh);
+      } catch {
+        // storage blocked: the person will be asked to sign in again
+      }
+    }
+  }
 };
 
 /* ========================================================================== */
@@ -1315,16 +1327,11 @@ const ResetPasswordScreen = ({
   };
 
   const handleReset = async () => {
-    if (!canReset) return;
+    if (!canReset || !resetToken) return;
     setErrorMsg("");
     setView("loading");
     try {
-      await resetPassword({
-        email: email.trim(),
-        code,
-        newPassword: newPass,
-        resetToken,
-      });
+      await resetPassword(resetToken, newPass);
       onDone();
     } catch (e) {
       setErrorMsg(
