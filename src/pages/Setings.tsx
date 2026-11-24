@@ -30,6 +30,7 @@ type Screen =
   | "theme"
   | "security"
   | "password"
+  | "reset"
   | "help"
   | "sync"
   | "privacy"
@@ -225,86 +226,201 @@ const readAndShrink = (file: File): Promise<string> =>
   });
 
 /* ========================================================================== */
-/*                           CHANGING THE PASSWORD                            */
+/*                         PASSWORD ENDPOINTS (BACKEND)                       */
 /* ========================================================================== */
-// There is no server yet, so the password is kept in this browser as a salted
-// hash (never as plain text). When you add a backend, replace `changePassword`
-// below with a call to it. Real password checks must happen on the server.
 
-// Where the saved password hash lives in this browser
-const PASSWORD_KEY = "accountPassword";
+const AUTH_API = "https://planora-uliy.onrender.com/api/auth";
+const FORGOT_PASSWORD_URL = `${AUTH_API}/forgot-password`;
+const VERIFY_RESET_CODE_URL = `${AUTH_API}/verify-reset-code`;
+const RESET_PASSWORD_URL = `${AUTH_API}/reset-password`;
+const CHANGE_PASSWORD_URL = `${AUTH_API}/change-password`;
 
-type StoredPassword = { salt: string; hash: string };
+// Free hosting (like Render) puts the server to sleep when it is not used, and
+// the first request can take up to a minute while it wakes up. We wait that long.
+const REQUEST_TIMEOUT_MS = 60000;
 
-type PasswordResult =
-  | { ok: true }
-  | { ok: false; reason: "wrong-current" | "same" | "failed" };
+// How many digits the reset code has, and how long to wait before a new code
+// can be requested (seconds)
+const CODE_LENGTH = 6;
+const RESEND_SECONDS = 30;
 
-const toHex = (bytes: Uint8Array): string =>
-  Array.from(bytes)
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+// Where the sign up screen keeps the email the account was created with, and
+// the token the server gave back (if it gave one)
+const EMAIL_KEY = "planora_email";
+const TOKEN_KEY = "planora_token";
 
-// Scrambles salt + password into a fixed-length code that can't be reversed
-const hashPassword = async (
-  password: string,
-  salt: string,
-): Promise<string> => {
-  const subtle = window.crypto?.subtle;
-  if (!subtle) throw new Error("Hashing is not available");
-  const data = new TextEncoder().encode(salt + password);
-  return toHex(new Uint8Array(await subtle.digest("SHA-256", data)));
+// Set this to true if your backend keeps the login in a cookie instead of a
+// token. The server must then allow your site's address in its CORS settings.
+const SEND_COOKIES = false;
+
+// Reads something kept in this browser without crashing if storage is blocked
+const readStored = (key: string): string => {
+  try {
+    return localStorage.getItem(key) ?? "";
+  } catch {
+    return "";
+  }
 };
 
-const readStoredPassword = (): StoredPassword | null => {
-  try {
-    const raw = localStorage.getItem(PASSWORD_KEY);
-    if (!raw) return null;
-    const saved = JSON.parse(raw);
-    if (typeof saved?.salt === "string" && typeof saved?.hash === "string") {
-      return { salt: saved.salt, hash: saved.hash };
+// Rules for a new password (the same as on the sign up screen)
+const newPasswordRules = [
+  {
+    id: "length",
+    label: "At least 8 characters",
+    test: (v: string) => v.length >= 8,
+  },
+  {
+    id: "letter",
+    label: "Contains a letter",
+    test: (v: string) => /\p{L}/u.test(v),
+  },
+  {
+    id: "special",
+    label: "Contains a special character (e.g. ! @ # $ %)",
+    test: (v: string) => /[^\p{L}\p{N}\s]/u.test(v),
+  },
+];
+
+// Finds the readable message in whatever shape the server sends its errors
+const readServerMessage = (data: unknown): string | null => {
+  if (!data || typeof data !== "object") return null;
+  const body = data as Record<string, unknown>;
+
+  for (const key of ["message", "error", "msg"]) {
+    const value = body[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+
+  if (Array.isArray(body.errors)) {
+    const first: unknown = body.errors[0];
+    if (typeof first === "string") return first;
+    if (first && typeof first === "object") {
+      const msg = (first as Record<string, unknown>).message;
+      if (typeof msg === "string") return msg;
     }
-  } catch {
-    // storage unavailable or damaged
   }
   return null;
 };
 
-// Changes the password, then reads it back to confirm it was really saved.
-// If no password has been saved yet, the first change sets it (there is
-// nothing to check the current password against until a server exists).
-const changePassword = async (
-  current: string,
-  next: string,
-): Promise<PasswordResult> => {
+// Sends JSON to the backend and returns whatever JSON it answers with. Throws
+// an Error with a readable message if the request fails. "signedIn" adds the
+// person's token, for the endpoints that need them to be logged in.
+const postJson = async (
+  url: string,
+  body: Record<string, unknown>,
+  fallbackMessage: string,
+  signedIn = false,
+): Promise<unknown> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+  };
+  const token = signedIn ? readStored(TOKEN_KEY) : "";
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  let response: Response;
   try {
-    const stored = readStoredPassword();
-
-    if (stored) {
-      const currentHash = await hashPassword(current, stored.salt);
-      if (currentHash !== stored.hash) {
-        return { ok: false, reason: "wrong-current" };
-      }
-    }
-
-    if (next === current) return { ok: false, reason: "same" };
-
-    const salt = toHex(window.crypto.getRandomValues(new Uint8Array(16)));
-    const hash = await hashPassword(next, salt);
-    localStorage.setItem(PASSWORD_KEY, JSON.stringify({ salt, hash }));
-
-    // Proof: what is saved now must match the new password, and the old one must not
-    const saved = readStoredPassword();
-    if (!saved || saved.salt !== salt || saved.hash !== hash) {
-      return { ok: false, reason: "failed" };
-    }
-    if ((await hashPassword(next, saved.salt)) !== saved.hash) {
-      return { ok: false, reason: "failed" };
-    }
-    return { ok: true };
-  } catch {
-    return { ok: false, reason: "failed" };
+    response = await fetch(url, {
+      method: "POST",
+      headers,
+      ...(SEND_COOKIES ? { credentials: "include" as const } : {}),
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    throw new Error(
+      error instanceof DOMException && error.name === "AbortError"
+        ? "The server is taking too long to respond. Please try again."
+        : "Can't reach the server. Check your internet connection and try again.",
+    );
+  } finally {
+    clearTimeout(timer);
   }
+
+  // The body may be empty or not JSON, which is fine
+  let data: unknown = null;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      readServerMessage(data) ??
+        (response.status === 429
+          ? "Too many attempts. Please wait a moment and try again."
+          : response.status >= 500
+            ? "Something went wrong on our side. Please try again shortly."
+            : fallbackMessage),
+    );
+  }
+
+  return data;
+};
+
+// Looks for a reset token in the usual places a server puts one
+const readResetToken = (data: unknown): string | undefined => {
+  if (!data || typeof data !== "object") return undefined;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const body = data as Record<string, any>;
+  const token = body.resetToken ?? body.token ?? body.data?.resetToken;
+  return typeof token === "string" && token ? token : undefined;
+};
+
+// 1. Emails a reset code to the address the account was created with
+const forgotPassword = async (email: string): Promise<void> => {
+  await postJson(
+    FORGOT_PASSWORD_URL,
+    { email },
+    "We couldn't send the code. Please check the email address and try again.",
+  );
+};
+
+// 2. Checks the code. Throws if it is wrong or expired. Returns a reset token
+// if the server gives one (it is then sent along in step 3).
+const verifyResetCode = async (
+  email: string,
+  code: string,
+): Promise<string | undefined> => {
+  const data = await postJson(
+    VERIFY_RESET_CODE_URL,
+    { email, otp: code },
+    "That code didn't work. Please check it and try again.",
+  );
+  return readResetToken(data);
+};
+
+// 3. Sets the new password
+const resetPassword = async (details: {
+  email: string;
+  code: string;
+  newPassword: string;
+  resetToken?: string;
+}): Promise<void> => {
+  await postJson(
+    RESET_PASSWORD_URL,
+    {
+      email: details.email,
+      otp: details.code,
+      newPassword: details.newPassword,
+      ...(details.resetToken ? { resetToken: details.resetToken } : {}),
+    },
+    "We couldn't reset your password. Please try again.",
+  );
+};
+
+// Changes the password of the signed-in person (needs their current password)
+const changePassword = async (current: string, next: string): Promise<void> => {
+  await postJson(
+    CHANGE_PASSWORD_URL,
+    { currentPassword: current, newPassword: next },
+    "We couldn't change your password. Check your current password and try again.",
+    true,
+  );
 };
 
 /* ========================================================================== */
@@ -925,10 +1041,13 @@ const PasswordField = ({
 const PasswordScreen = ({
   onBack,
   onChanged,
+  onSendResetCode,
 }: {
   onBack: () => void;
   // Called once the password has really been changed
   onChanged: () => void;
+  // Called when "Send reset code" is pressed
+  onSendResetCode: () => void;
 }) => {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
@@ -949,27 +1068,29 @@ const PasswordScreen = ({
     e.preventDefault();
     if (!canUpdate || busy) return;
 
+    if (next === current) {
+      setError("Choose a new password that is different from the current one.");
+      return;
+    }
+
     setBusy(true);
     setError("");
-    const result = await changePassword(current, next);
-    setBusy(false);
-
-    if (result.ok) {
+    try {
+      await changePassword(current, next);
       // Clear the fields, then let the page show "Password successfully changed"
       setCurrent("");
       setNext("");
       setConfirm("");
       onChanged();
-      return;
-    }
-
-    setError(
-      result.reason === "wrong-current"
-        ? "Your current password is incorrect."
-        : result.reason === "same"
-          ? "Choose a new password that is different from the current one."
+    } catch (e) {
+      setError(
+        e instanceof Error && e.message
+          ? e.message
           : "We couldn't change your password. Please try again.",
-    );
+      );
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -1066,17 +1187,459 @@ const PasswordScreen = ({
               Forgotten password
             </p>
             <p className="text-[0.75rem] font-normal text-[#6B7280]">
-              Send a reset link to your email
+              Send a reset code to your email
             </p>
           </div>
 
           <button
             type="button"
+            onClick={onSendResetCode}
             className="flex min-h-9 shrink-0 whitespace-nowrap touch-manipulation items-center gap-1 rounded-lg bg-[#F1F4F8] px-3 text-[0.875rem] font-normal text-[#111827]"
           >
             Send reset code
             <MdOutlineKeyboardArrowRight size={16} aria-hidden="true" />
           </button>
+        </div>
+      </section>
+    </>
+  );
+};
+
+// The Reset password screens, opened from "Send reset code" on the Password
+// screen. A code is emailed to the address the account was created with, the
+// person types it in, and then chooses a new password.
+//   email       - asks for the address (only if the app doesn't know it)
+//   loading     - spinner while the server is working
+//   code        - the boxes for the code
+//   newPassword - the new password
+type ResetView = "email" | "loading" | "code" | "newPassword";
+
+const emptyDigits = () => Array<string>(CODE_LENGTH).fill("");
+
+const ResetPasswordScreen = ({
+  initialEmail,
+  onBack,
+  onDone,
+}: {
+  // The email the account was created with, if the app knows it
+  initialEmail: string;
+  onBack: () => void;
+  // Called once the password has really been reset
+  onDone: () => void;
+}) => {
+  const [view, setView] = useState<ResetView>(
+    initialEmail ? "loading" : "email",
+  );
+  const [email, setEmail] = useState(initialEmail);
+  const [digits, setDigits] = useState<string[]>(emptyDigits);
+  const [newPass, setNewPass] = useState("");
+  const [confirmPass, setConfirmPass] = useState("");
+  const [resetToken, setResetToken] = useState<string | undefined>(undefined);
+  const [errorMsg, setErrorMsg] = useState("");
+  const [secondsLeft, setSecondsLeft] = useState(0);
+
+  const codeRefs = useRef<(HTMLInputElement | null)[]>([]);
+  const autoSent = useRef(false);
+
+  const canSend = /^\S+@\S+\.\S+$/.test(email.trim());
+  const code = digits.join("");
+  const canVerify = digits.every((d) => d !== "");
+
+  const checks = newPasswordRules.map((rule) => ({
+    ...rule,
+    passed: rule.test(newPass),
+  }));
+  const isNewValid = checks.every((c) => c.passed);
+  const matches = newPass === confirmPass;
+  const showMismatch = confirmPass !== "" && !matches;
+  const canReset = isNewValid && confirmPass !== "" && matches;
+
+  // Asks the server to email a code, then opens the code screen. If it fails,
+  // goes back to the screen the person was on, with the reason.
+  const requestCode = async (onError: ResetView) => {
+    setErrorMsg("");
+    setView("loading");
+    try {
+      await forgotPassword(email.trim());
+      setDigits(emptyDigits());
+      setSecondsLeft(RESEND_SECONDS);
+      setView("code");
+    } catch (e) {
+      setErrorMsg(
+        e instanceof Error && e.message
+          ? e.message
+          : "Couldn't send the code. Please try again.",
+      );
+      setView(onError);
+    }
+  };
+
+  // With the sign up email known, the first code is sent as soon as this opens
+  useEffect(() => {
+    if (initialEmail && !autoSent.current) {
+      autoSent.current = true;
+      requestCode("email");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Put the cursor in the first box when the code screen opens
+  useEffect(() => {
+    if (view === "code") codeRefs.current[0]?.focus();
+  }, [view]);
+
+  // Counts down until a new code can be requested
+  useEffect(() => {
+    if (secondsLeft <= 0) return;
+    const timer = setTimeout(() => setSecondsLeft((n) => n - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [secondsLeft]);
+
+  const handleVerify = async () => {
+    if (!canVerify) return;
+    setErrorMsg("");
+    setView("loading");
+    try {
+      setResetToken(await verifyResetCode(email.trim(), code));
+      setNewPass("");
+      setConfirmPass("");
+      setView("newPassword");
+    } catch (e) {
+      setErrorMsg(
+        e instanceof Error && e.message
+          ? e.message
+          : "That code didn't work. Please try again.",
+      );
+      setView("code");
+    }
+  };
+
+  const handleReset = async () => {
+    if (!canReset) return;
+    setErrorMsg("");
+    setView("loading");
+    try {
+      await resetPassword({
+        email: email.trim(),
+        code,
+        newPassword: newPass,
+        resetToken,
+      });
+      onDone();
+    } catch (e) {
+      setErrorMsg(
+        e instanceof Error && e.message
+          ? e.message
+          : "We couldn't reset your password. Please try again.",
+      );
+      setView("newPassword");
+    }
+  };
+
+  // Typing, pasting or autofilling: extra digits flow into the next boxes
+  const handleDigitChange = (index: number, raw: string) => {
+    const cleaned = raw.replace(/\D/g, "");
+    setErrorMsg("");
+
+    setDigits((prev) => {
+      const next = [...prev];
+      if (!cleaned) {
+        next[index] = "";
+        return next;
+      }
+      cleaned
+        .slice(0, CODE_LENGTH - index)
+        .split("")
+        .forEach((d, k) => {
+          next[index + k] = d;
+        });
+      return next;
+    });
+
+    if (cleaned) {
+      codeRefs.current[
+        Math.min(index + cleaned.length, CODE_LENGTH - 1)
+      ]?.focus();
+    }
+  };
+
+  const handleDigitKeyDown = (
+    index: number,
+    e: React.KeyboardEvent<HTMLInputElement>,
+  ) => {
+    if (e.key === "Backspace" && !digits[index] && index > 0) {
+      e.preventDefault();
+      setDigits((prev) => {
+        const next = [...prev];
+        next[index - 1] = "";
+        return next;
+      });
+      codeRefs.current[index - 1]?.focus();
+    } else if (e.key === "ArrowLeft" && index > 0) {
+      codeRefs.current[index - 1]?.focus();
+    } else if (e.key === "ArrowRight" && index < CODE_LENGTH - 1) {
+      codeRefs.current[index + 1]?.focus();
+    }
+  };
+
+  // The back button goes one step back, and leaves the flow from the first step
+  const handleBack = () => {
+    setErrorMsg("");
+    if (view === "newPassword") setView("code");
+    else if (view === "code") setView("email");
+    else onBack();
+  };
+
+  // Blank screen with a circular loader, shown while the server is working
+  if (view === "loading") {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-white">
+        <div role="status" aria-live="polite">
+          <div className="h-12 w-12 animate-spin rounded-full border-4 border-[#D8E5F3] border-t-[#1A7431]" />
+          <span className="sr-only">Loading...</span>
+        </div>
+      </div>
+    );
+  }
+
+  const heading =
+    view === "newPassword"
+      ? {
+          title: "Create new password",
+          text: "Choose a strong password to keep your account secure.",
+        }
+      : view === "code"
+        ? {
+            title: "Enter reset code",
+            text: `We sent a ${CODE_LENGTH}-digit code to ${email.trim()}`,
+          }
+        : {
+            title: "Reset your password",
+            text: "Enter the email address you signed up with.",
+          };
+
+  return (
+    <>
+      {/* Title card */}
+      <div className="mx-auto w-full max-w-md rounded-3xl bg-[#F8FAFC] p-3 min-[360px]:p-4">
+        <div className="rounded-2xl bg-white p-4 min-[360px]:p-5">
+          <button
+            type="button"
+            onClick={handleBack}
+            aria-label="Go back"
+            className="-mt-2 -ml-2 flex min-h-11 touch-manipulation items-center pr-3 pl-1 text-[0.75rem] font-normal text-[#6B7280]"
+          >
+            <MdOutlineKeyboardArrowLeft size={16} aria-hidden="true" />
+            Reset password
+          </button>
+
+          <h1 className="mt-1 text-[1rem] font-medium text-[#111827]">
+            {heading.title}
+          </h1>
+          <p className="mt-1 text-[0.875rem] font-normal break-words text-[#6B7280]">
+            {heading.text}
+          </p>
+        </div>
+      </div>
+
+      <section className="mx-auto mt-4 w-full max-w-md rounded-3xl bg-[#F8FAFC] p-3 min-[360px]:p-4">
+        <div className="rounded-xl bg-white p-3 min-[360px]:p-4">
+          {view === "email" && (
+            <form
+              noValidate
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (canSend) requestCode("email");
+              }}
+              className="flex flex-col gap-2"
+            >
+              <label
+                htmlFor="reset-email"
+                className="text-[0.875rem] font-medium text-[#111827]"
+              >
+                Email Address
+              </label>
+              <input
+                id="reset-email"
+                name="email"
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                enterKeyHint="send"
+                placeholder="Enter Email Address"
+                value={email}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  setErrorMsg("");
+                }}
+                style={{ fontSize: "16px" }}
+                className={inputClass}
+              />
+              <button
+                type="submit"
+                disabled={!canSend}
+                className="mt-3 min-h-10 touch-manipulation rounded-xl bg-[#1A7431] px-4 text-[0.875rem] font-normal text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Send Reset Code
+              </button>
+            </form>
+          )}
+
+          {view === "code" && (
+            <>
+              <form
+                noValidate
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleVerify();
+                }}
+              >
+                {/* One box per digit. 24px text, so phones don't zoom in on tap. */}
+                <div
+                  className="grid gap-2 min-[360px]:gap-3"
+                  style={{
+                    gridTemplateColumns: `repeat(${CODE_LENGTH}, minmax(0, 1fr))`,
+                  }}
+                >
+                  {digits.map((digit, i) => (
+                    <input
+                      key={i}
+                      ref={(el) => {
+                        codeRefs.current[i] = el;
+                      }}
+                      name={`reset-code-${i + 1}`}
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      autoComplete={i === 0 ? "one-time-code" : "off"}
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      aria-label={`Digit ${i + 1} of ${CODE_LENGTH}`}
+                      value={digit}
+                      onChange={(e) => handleDigitChange(i, e.target.value)}
+                      onKeyDown={(e) => handleDigitKeyDown(i, e)}
+                      onFocus={(e) => e.target.select()}
+                      style={{ fontSize: "24px" }}
+                      className="aspect-square w-full min-w-0 rounded-2xl border-[1.5px] border-[#E1E7F0] bg-[#FAFBFC] p-0 text-center text-[24px] leading-none font-semibold text-[#111827] outline-none focus:border-[#1A7431]"
+                    />
+                  ))}
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={!canVerify}
+                  className="mt-5 min-h-10 touch-manipulation rounded-xl bg-[#1A7431] px-4 text-[0.875rem] font-normal text-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Verify Code
+                </button>
+              </form>
+
+              <p className="mt-5 text-[0.75rem] font-normal text-[#6B7280]">
+                Didn&apos;t get the code?{" "}
+                {secondsLeft > 0 ? (
+                  <span aria-live="polite" className="font-medium">
+                    Resend in 0:{String(secondsLeft).padStart(2, "0")}
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => requestCode("code")}
+                    className="touch-manipulation py-1 font-medium text-[#1A7431]"
+                  >
+                    Request a new code
+                  </button>
+                )}
+              </p>
+            </>
+          )}
+
+          {view === "newPassword" && (
+            <form
+              noValidate
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleReset();
+              }}
+              className="flex flex-col gap-4"
+            >
+              <PasswordField
+                id="reset-new-password"
+                label="New Password"
+                placeholder="Enter New Password"
+                autoComplete="new-password"
+                value={newPass}
+                onChange={(v) => {
+                  setNewPass(v);
+                  setErrorMsg("");
+                }}
+              />
+
+              {newPass.length > 0 && (
+                <ul aria-live="polite" className="flex flex-col gap-1">
+                  {checks.map((check) => (
+                    <li
+                      key={check.id}
+                      className={`flex items-center gap-2 text-[0.75rem] font-normal ${
+                        check.passed ? "text-[#1A7431]" : "text-[#6B7280]"
+                      }`}
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={`h-3 w-3 shrink-0 rounded-full border ${
+                          check.passed
+                            ? "border-[#1A7431] bg-[#1A7431]"
+                            : "border-[#C6CCD3]"
+                        }`}
+                      />
+                      <span>{check.label}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <PasswordField
+                id="reset-confirm-password"
+                label="Confirm Password"
+                placeholder="Confirm New Password"
+                autoComplete="new-password"
+                value={confirmPass}
+                onChange={(v) => {
+                  setConfirmPass(v);
+                  setErrorMsg("");
+                }}
+              />
+
+              {showMismatch && (
+                <p
+                  role="alert"
+                  className="text-[0.75rem] font-normal text-[#E74C3C]"
+                >
+                  Passwords don&apos;t match.
+                </p>
+              )}
+
+              <button
+                type="submit"
+                disabled={!canReset}
+                className="mt-1 min-h-10 touch-manipulation rounded-xl bg-[#1A7431] px-4 text-[0.875rem] font-normal text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Reset Password
+              </button>
+            </form>
+          )}
+
+          {errorMsg && (
+            <p
+              role="alert"
+              className="mt-4 text-[0.75rem] font-normal text-[#E74C3C]"
+            >
+              {errorMsg}
+            </p>
+          )}
         </div>
       </section>
     </>
@@ -1787,6 +2350,16 @@ const Setings = () => {
         <PasswordScreen
           onBack={() => setScreen("security")}
           onChanged={() => setToast("Password successfully changed")}
+          onSendResetCode={() => setScreen("reset")}
+        />
+      ) : screen === "reset" ? (
+        <ResetPasswordScreen
+          initialEmail={readStored(EMAIL_KEY).trim()}
+          onBack={() => setScreen("password")}
+          onDone={() => {
+            setToast("Password successfully changed");
+            setScreen("password");
+          }}
         />
       ) : screen === "help" ? (
         <HelpScreen onBack={() => setScreen("settings")} />
