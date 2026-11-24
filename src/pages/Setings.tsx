@@ -241,7 +241,7 @@ const REQUEST_TIMEOUT_MS = 60000;
 
 // How many digits the reset code has, and how long to wait before a new code
 // can be requested (seconds)
-const CODE_LENGTH = 6;
+const CODE_LENGTH = 4;
 const RESEND_SECONDS = 30;
 
 // Where the sign up screen keeps the email the account was created with, and
@@ -1411,7 +1411,7 @@ const ResetPasswordScreen = ({
       : view === "code"
         ? {
             title: "Enter reset code",
-            text: `We sent a ${CODE_LENGTH}-digit code to ${email.trim()}`,
+            text: "A four digit code has been sent to your email address",
           }
         : {
             title: "Reset your password",
