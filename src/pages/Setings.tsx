@@ -244,14 +244,21 @@ const REQUEST_TIMEOUT_MS = 60000;
 const CODE_LENGTH = 4;
 const RESEND_SECONDS = 30;
 
-// Where the sign up screen keeps the email the account was created with, and
-// the token the server gave back (if it gave one)
+// Where the app keeps the email the account was created with, and the two
+// tokens the server gave back at sign in (the same keys the rest of the app uses)
 const EMAIL_KEY = "planora_email";
-const TOKEN_KEY = "planora_token";
+const TOKEN_KEY = "accessToken";
+const REFRESH_KEY = "refreshToken";
 
-// Set this to true if your backend keeps the login in a cookie instead of a
-// token. The server must then allow your site's address in its CORS settings.
-const SEND_COOKIES = false;
+// While you are testing, error messages also show the server's status number
+// (like 400 or 401) and the email the code was sent to, so a failure can be
+// understood without opening the browser's developer tools. Set this to false
+// before you launch.
+const SHOW_ERROR_DETAILS = true;
+
+// Sends cookies with each request, like the rest of the app does. The server
+// already allows this for your site.
+const SEND_COOKIES = true;
 
 // Reads something kept in this browser without crashing if storage is blocked
 const readStored = (key: string): string => {
@@ -349,17 +356,38 @@ const postJson = async (
   }
 
   if (!response.ok) {
-    throw new Error(
+    const message =
       readServerMessage(data) ??
-        (response.status === 429
-          ? "Too many attempts. Please wait a moment and try again."
-          : response.status >= 500
-            ? "Something went wrong on our side. Please try again shortly."
-            : fallbackMessage),
+      (response.status === 429
+        ? "Too many attempts. Please wait a moment and try again."
+        : response.status >= 500
+          ? "Something went wrong on our side. Please try again shortly."
+          : fallbackMessage);
+    throw new Error(
+      SHOW_ERROR_DETAILS ? `${message} (status ${response.status})` : message,
     );
   }
 
   return data;
+};
+
+// Finds a text value under one of these names, even inside { data: {...} }
+const findString = (
+  data: unknown,
+  keys: string[],
+  depth = 0,
+): string | undefined => {
+  if (!data || typeof data !== "object" || depth > 4) return undefined;
+  const body = data as Record<string, unknown>;
+  for (const key of keys) {
+    const value = body[key];
+    if (typeof value === "string" && value) return value;
+  }
+  for (const value of Object.values(body)) {
+    const found = findString(value, keys, depth + 1);
+    if (found) return found;
+  }
+  return undefined;
 };
 
 // Looks for a reset token in the usual places a server puts one
@@ -419,19 +447,19 @@ const changePassword = async (current: string, next: string): Promise<void> => {
     true,
   );
 
-  // The server revokes the old tokens and sends back fresh ones. Keep the new
-  // access token, or the next request would be refused.
-  if (data && typeof data === "object") {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const body = data as Record<string, any>;
-    const fresh = body.accessToken ?? body.token ?? body.data?.accessToken;
-    if (typeof fresh === "string" && fresh) {
-      try {
-        localStorage.setItem(TOKEN_KEY, fresh);
-      } catch {
-        // storage blocked: the person will be asked to sign in again
-      }
-    }
+  // The server revokes the old tokens and sends back fresh ones. Keep both,
+  // or the person's next request would be refused.
+  const accessToken = findString(data, [
+    "accessToken",
+    "access_token",
+    "token",
+  ]);
+  const refreshToken = findString(data, ["refreshToken", "refresh_token"]);
+  try {
+    if (accessToken) localStorage.setItem(TOKEN_KEY, accessToken);
+    if (refreshToken) localStorage.setItem(REFRESH_KEY, refreshToken);
+  } catch {
+    // storage blocked: the person will be asked to sign in again
   }
 };
 
@@ -1317,10 +1345,12 @@ const ResetPasswordScreen = ({
       setConfirmPass("");
       setView("newPassword");
     } catch (e) {
-      setErrorMsg(
+      const base =
         e instanceof Error && e.message
           ? e.message
-          : "That code didn't work. Please try again.",
+          : "That code didn't work. Please try again.";
+      setErrorMsg(
+        SHOW_ERROR_DETAILS ? `${base} Code sent to: ${email.trim()}` : base,
       );
       setView("code");
     }
