@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { useLocation } from "react-router-dom";
 import { CiSearch } from "react-icons/ci";
 import { IoIosNotificationsOutline } from "react-icons/io";
 import { FiMoreHorizontal, FiEdit2, FiTrash2, FiCheck } from "react-icons/fi";
@@ -13,15 +14,40 @@ import type { Task } from "../layout/taskStore";
 import AddTaskModal from "../layout/AddTaskModal";
 import { showToast } from "../layout/Toast";
 import type { NewTask } from "../layout/AddTaskModal";
+import { authApi } from "../api/client";
 
 type Props = {
-  // The user's first name, shown in the greeting
+  // Optional override for the user's name shown in the greeting
   name?: string;
   // Tasks finished today, and the total planned for today.
   // Leave them out and they are worked out from the tasks themselves.
   completedTasks?: number;
   totalTasks?: number;
 };
+
+// Storage keys shared with SignUp and Verify
+const FIRST_NAME_KEY = "planora_first_name";
+const LAST_NAME_KEY = "planora_last_name";
+const FULL_NAME_KEY = "planora_full_name";
+
+const readStored = (key: string): string => {
+  try {
+    return localStorage.getItem(key)?.trim() ?? "";
+  } catch {
+    return "";
+  }
+};
+
+const writeStored = (key: string, value: string) => {
+  try {
+    if (value) localStorage.setItem(key, value);
+  } catch {
+    // storage unavailable
+  }
+};
+
+const formatFullName = (first?: string, last?: string): string =>
+  [first?.trim(), last?.trim()].filter(Boolean).join(" ");
 
 // "Good morning", "Good afternoon" or "Good evening" from the device's clock
 const getGreeting = () => {
@@ -487,7 +513,75 @@ const CompletedItem = ({ task }: { task: Task }) => (
   </li>
 );
 
-const Home = ({ name = "Adaeze", completedTasks, totalTasks }: Props) => {
+const Home = ({ name, completedTasks, totalTasks }: Props) => {
+  const location = useLocation();
+  const routeState = location.state as {
+    firstName?: string;
+    lastName?: string;
+    fullName?: string;
+  } | null;
+
+  // Resolve full name from prop, router state, or localStorage
+  const initialFullName =
+    name?.trim() ||
+    routeState?.fullName?.trim() ||
+    formatFullName(routeState?.firstName, routeState?.lastName) ||
+    readStored(FULL_NAME_KEY) ||
+    formatFullName(readStored(FIRST_NAME_KEY), readStored(LAST_NAME_KEY));
+
+  const [displayName, setDisplayName] = useState<string>(initialFullName);
+
+  // Sync with backend profile (/auth/me) so the full name stays accurate across
+  // sessions, OAuth sign-ins, or when localStorage was cleared
+  useEffect(() => {
+    if (name?.trim()) {
+      setDisplayName(name.trim());
+      return;
+    }
+
+    let cancelled = false;
+    authApi
+      .me()
+      .then((res) => {
+        if (cancelled) return;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const data = res.data as Record<string, any>;
+        const user = data?.user ?? data?.data?.user ?? data;
+        const first =
+          typeof user?.firstName === "string"
+            ? user.firstName
+            : typeof user?.first_name === "string"
+              ? user.first_name
+              : "";
+        const last =
+          typeof user?.lastName === "string"
+            ? user.lastName
+            : typeof user?.last_name === "string"
+              ? user.last_name
+              : "";
+        const full =
+          typeof user?.fullName === "string" && user.fullName.trim()
+            ? user.fullName.trim()
+            : typeof user?.name === "string" && user.name.trim()
+              ? user.name.trim()
+              : formatFullName(first, last);
+
+        if (full) {
+          setDisplayName(full);
+          writeStored(FULL_NAME_KEY, full);
+          if (first) writeStored(FIRST_NAME_KEY, first);
+          if (last) writeStored(LAST_NAME_KEY, last);
+        }
+      })
+      .catch(() => {
+        // Keep whatever name was already loaded from route state or storage
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [name]);
+
   const storeTasks = useTasks();
 
   const [status, setStatus] = useState<Status>(loadStatus);
@@ -639,7 +733,8 @@ const Home = ({ name = "Adaeze", completedTasks, totalTasks }: Props) => {
         <div className="mt-[clamp(12px,4vw,16px)] flex items-center justify-between gap-[clamp(8px,3vw,16px)] rounded-2xl bg-white px-[clamp(12px,4vw,16px)] py-[clamp(16px,5vw,24px)]">
           <div className="flex min-w-0 flex-col gap-[clamp(8px,3vw,16px)]">
             <h1 className="text-[clamp(1rem,4.8vw,1.25rem)] leading-[1.45] font-semibold break-words text-[#111827]">
-              {getGreeting()}, {name}{" "}
+              {getGreeting()}
+              {displayName ? `, ${displayName}` : ""}{" "}
               <span role="img" aria-label="waving hand">
                 👋
               </span>

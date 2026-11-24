@@ -29,10 +29,9 @@ const REQUEST_TIMEOUT_MS = 60000;
 // you can see exactly which field it rejected. Set to false before launch.
 const SHOW_RAW_ERRORS = true;
 
-// Where the returning user's email is kept in the browser. The WelcomeBack
-// (sign in) screen reads the same key. Tokens are NOT stored here: the backend
-// keeps the session in httpOnly cookies.
+// Where the returning user's email and first name are kept in the browser.
 const EMAIL_KEY = "planora_email";
+const FIRST_NAME_KEY = "planora_first_name";
 
 // Apple and Google sign-in need these. Create them in the Google Cloud Console
 // and the Apple Developer portal, then put them in your .env file AND in your
@@ -73,7 +72,7 @@ const writeStored = (key: string, value: string) => {
   try {
     localStorage.setItem(key, value);
   } catch {
-    // storage unavailable: the greeting screen just won't remember the email
+    // storage unavailable: the greeting screen just won't remember the value
   }
 };
 
@@ -144,13 +143,23 @@ const getApiError = (e: unknown, fallback: string): string => {
   return fallback;
 };
 
-// Looks for the person's email in the usual places a server puts it
-const readEmail = (data: unknown): string | undefined => {
-  if (!data || typeof data !== "object") return undefined;
+// Looks for the person's email and first name in the usual places a server puts them
+const readUserInfo = (
+  data: unknown,
+): { email?: string; firstName?: string } => {
+  if (!data || typeof data !== "object") return {};
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const body = data as Record<string, any>;
-  const email = body.user?.email ?? body.data?.user?.email ?? body.email;
-  return typeof email === "string" && email ? email : undefined;
+  const userObj = body.user ?? body.data?.user ?? body;
+  const email =
+    typeof userObj?.email === "string" && userObj.email
+      ? userObj.email
+      : undefined;
+  const firstName =
+    typeof userObj?.firstName === "string" && userObj.firstName
+      ? userObj.firstName
+      : undefined;
+  return { email, firstName };
 };
 
 // Sends the sign-up to the backend. The backend sets the session cookies
@@ -169,8 +178,9 @@ const signUpWithEmail = async (details: SignUpDetails): Promise<void> => {
       ),
     );
   }
-  // The sign in screen needs the email later
+  // Save email and firstName so Verify and Home can read them even after a refresh
   writeStored(EMAIL_KEY, details.email);
+  writeStored(FIRST_NAME_KEY, details.firstName);
 };
 
 // Loads a script once and waits for it. Resolves straight away if it is
@@ -295,7 +305,9 @@ const getAppleToken = async (): Promise<{
 // Signs in or signs up with Apple or Google. Gets the token from the provider,
 // sends it to your backend's oauth endpoint (the backend sets the session
 // cookies). Sends: { provider: "google" | "apple", token, user? }
-const signInWithProvider = async (provider: Provider): Promise<void> => {
+const signInWithProvider = async (
+  provider: Provider,
+): Promise<{ firstName?: string }> => {
   let token: string;
   let user: unknown;
 
@@ -310,8 +322,10 @@ const signInWithProvider = async (provider: Provider): Promise<void> => {
       { provider, token, ...(user ? { user } : {}) },
       { timeout: REQUEST_TIMEOUT_MS },
     );
-    const email = readEmail(res.data);
+    const { email, firstName } = readUserInfo(res.data);
     if (email) writeStored(EMAIL_KEY, email);
+    if (firstName) writeStored(FIRST_NAME_KEY, firstName);
+    return { firstName };
   } catch (e) {
     throw new Error(
       getApiError(
@@ -447,16 +461,17 @@ const SignUp = () => {
     setLoading(true);
     try {
       const email = values.email.trim();
+      const firstName = values.firstName.trim();
       await signUpWithEmail({
-        firstName: values.firstName.trim(),
+        firstName,
         lastName: values.lastName.trim(),
         email,
         password: values.password,
         confirmPassword: values.confirmPassword,
       });
-      // On to the verification page. It gets the email address, so it can
-      // send the 6-digit code straight away.
-      navigate(VERIFY_PATH, { state: { email } });
+      // Pass both email and firstName to the verification page so it can
+      // forward firstName to /home once verified.
+      navigate(VERIFY_PATH, { state: { email, firstName } });
     } catch (error) {
       // sign-up failed: go back to the form and say why
       setErrorMsg(
@@ -475,10 +490,8 @@ const SignUp = () => {
     setErrorMsg("");
     try {
       setLoading(true);
-      await signInWithProvider(provider);
-      // The session cookies are now set. ProtectedRoute confirms the session
-      // with /auth/me when the home page opens.
-      navigate(HOME_PATH, { replace: true });
+      const { firstName } = await signInWithProvider(provider);
+      navigate(HOME_PATH, { replace: true, state: { firstName } });
     } catch (error) {
       setLoading(false);
       // Closing the window on purpose is not an error
@@ -529,9 +542,6 @@ const SignUp = () => {
 
   return (
     <>
-      {/* Full-screen background, so the colour reaches the bottom of tall
-          phones and the sides of wide ones. overflow-x-hidden stops any
-          sideways scrolling on very narrow screens (320px and below). */}
       <div className="min-h-dvh w-full overflow-x-hidden bg-[#F1F4F8]">
         <div className="relative mx-auto flex min-h-dvh w-full max-w-md flex-col overflow-x-hidden">
           <svg
@@ -564,8 +574,6 @@ const SignUp = () => {
             </p>
           </div>
 
-          {/* The buttons are inside the form, so they are always exactly as wide
-              as the fields and the Enter key submits the form */}
           <form
             onSubmit={handleSubmit}
             noValidate
@@ -590,8 +598,6 @@ const SignUp = () => {
                   </label>
 
                   <div className="relative">
-                    {/* font-size is 16px on purpose: iPhones zoom into any input
-                        smaller than 16px when it is tapped */}
                     <input
                       id={field.id}
                       name={field.id}
@@ -642,7 +648,6 @@ const SignUp = () => {
                     </p>
                   )}
 
-                  {/* Live checklist: each rule turns green once it is met */}
                   {isPasswordField && showPasswordRules && (
                     <ul
                       id="password-rules"

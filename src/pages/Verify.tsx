@@ -20,7 +20,20 @@ const RESEND_SECONDS = 30;
 // The page users land on once their account is verified
 const HOME_PATH = "/home";
 
+// Storage keys shared with SignUp and Home
+const EMAIL_KEY = "planora_email";
+const FIRST_NAME_KEY = "planora_first_name";
+
 const emptyDigits = () => Array<string>(CODE_LENGTH).fill("");
+
+// Safely reads from localStorage (returns "" if unavailable)
+const readStored = (key: string): string => {
+  try {
+    return localStorage.getItem(key) ?? "";
+  } catch {
+    return "";
+  }
+};
 
 // Shared input look (16px text so phones don't zoom in when it is tapped)
 const inputClass =
@@ -46,11 +59,18 @@ const verifyCode = async (_email: string, _code: string): Promise<void> => {
 const Verify = () => {
   const navigate = useNavigate();
 
-  // The sign up screen can pass the address along:
-  //   navigate("/verify", { state: { email } })
+  // The sign up screen passes email and firstName along:
+  //   navigate("/verify", { state: { email, firstName } })
+  // Fall back to localStorage in case the page was refreshed.
   const location = useLocation();
-  const startEmail =
-    (location.state as { email?: string } | null)?.email?.trim() ?? "";
+  const routeState = location.state as {
+    email?: string;
+    firstName?: string;
+  } | null;
+
+  const startEmail = routeState?.email?.trim() || readStored(EMAIL_KEY).trim();
+  const firstName =
+    routeState?.firstName?.trim() || readStored(FIRST_NAME_KEY).trim();
 
   const [email, setEmail] = useState(startEmail);
   // With an address already known, a code is sent as soon as the page opens
@@ -118,8 +138,7 @@ const Verify = () => {
   };
 
   // Shows the loading screen while the code is checked. If it is right: the
-  // person is signed in and sent to the home page. If not: back to the code
-  // screen with an error (the digits stay filled in).
+  // person is signed in and sent to the home page with their firstName.
   const handleVerify = async () => {
     if (!canVerify) return;
     setErrorMsg("");
@@ -133,7 +152,10 @@ const Verify = () => {
         "Account Verified Successfully",
         "Please close this alert and get right into Planora",
       );
-      navigate(HOME_PATH, { replace: true });
+      navigate(HOME_PATH, {
+        replace: true,
+        state: { firstName },
+      });
     } catch (e) {
       setErrorMsg(
         e instanceof Error && e.message
@@ -206,13 +228,9 @@ const Verify = () => {
   }
 
   return (
-    // touch-manipulation stops the double-tap zoom on every tap target, the
-    // text-size-adjust rule stops phones from silently enlarging text, and
-    // overflow-x-hidden stops sideways scrolling on very narrow screens
     <div className="min-h-dvh w-full touch-manipulation overflow-x-hidden bg-[#F8F9FB] [-webkit-text-size-adjust:100%] [text-size-adjust:100%]">
       <div className="mx-auto flex min-h-dvh w-full max-w-md flex-col">
-        {/* Header: tinted area with the logo and title. Spacing scales with
-            the screen height so small phones and landscape still fit. */}
+        {/* Header: tinted area with the logo and title */}
         <header className="relative overflow-hidden bg-[#F1F4F8] px-4 pt-[clamp(32px,12dvh,110px)] pb-6 min-[360px]:px-5 min-[414px]:px-6">
           <svg
             aria-hidden="true"
@@ -272,8 +290,6 @@ const Verify = () => {
                 }}
                 className="flex flex-col"
               >
-                {/* One square box per digit. Each box keeps its text at 24px,
-                    so phones don't zoom in when a box is tapped. */}
                 <div
                   className="grid gap-3"
                   style={{
@@ -340,8 +356,6 @@ const Verify = () => {
                 )}
               </p>
 
-              {/* Back pill, pushed to the bottom right of the sheet. It goes
-                  back to the email screen, to fix a wrong address. */}
               <div className="mt-auto flex justify-end pt-8">
                 <button
                   type="button"
