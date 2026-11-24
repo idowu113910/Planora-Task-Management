@@ -11,6 +11,7 @@ import {
 } from "react-icons/bs";
 import planora from "../assets/planora.svg";
 import { markSignedIn } from "../auth";
+import { authApi, saveTokens } from "../api/client"; // Update this path to match your actual client.ts location
 
 type Props = {
   // The returning user's first name, shown in the greeting
@@ -256,12 +257,15 @@ const WelcomeBack = ({ name = "Adaeze", email: emailProp }: Props) => {
     setView("loading");
     try {
       const accountEmail = (emailProp ?? readStored(EMAIL_KEY)).trim();
-      await signInWithPassword(accountEmail, password);
-      // Tell the app someone is signed in. Without this, ProtectedRoute would
-      // send them straight back to the sign in page.
+
+      // 1. Use authApi.login directly from your client.ts
+      // This automatically calls saveTokens under the hood!
+      await authApi.login({ email: accountEmail, password });
+
+      // 2. Tell the app someone is signed in
       markSignedIn();
-      // Opens the home page inside the app (no full page reload). "replace"
-      // means the browser's Back button won't return to the sign in screen.
+
+      // 3. Navigate to home page
       navigate(HOME_PATH, { replace: true });
     } catch (e) {
       setErrorMsg(
