@@ -414,6 +414,13 @@ const verifyResetCode = async (
   email: string,
   code: string,
 ): Promise<string> => {
+  // Stop here if the boxes didn't produce exactly 4 digits, instead of sending
+  // an empty code to the server
+  if (!new RegExp(`^\\d{${CODE_LENGTH}}$`).test(code)) {
+    throw new Error(
+      `Please enter all ${CODE_LENGTH} digits of the code (got ${code.length}).`,
+    );
+  }
   const data = await postJson(
     VERIFY_RESET_CODE_URL,
     { email, code },
