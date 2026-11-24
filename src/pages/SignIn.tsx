@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
+import axios from "axios";
 import {
   BsArrowLeft,
   BsCheckCircle,
@@ -11,7 +12,7 @@ import {
 } from "react-icons/bs";
 import planora from "../assets/planora.svg";
 import { markSignedIn } from "../auth";
-import { authApi, saveTokens } from "../api/client"; // Update this path to match your actual client.ts location
+import { authApi } from "../api/client";
 
 type Props = {
   // The returning user's first name, shown in the greeting
@@ -34,16 +35,9 @@ const TOAST_DURATION = 5000;
 // The page users land on after signing in. Change this to your home page route.
 const HOME_PATH = "/home";
 
-// Backend login endpoint
-const LOGIN_URL = "https://planora-uliy.onrender.com/api/auth/login";
-
-// How long to wait for the login request before giving up (milliseconds).
-// Render's free plan can take up to a minute to wake a sleeping server.
-const LOGIN_TIMEOUT = 60000;
-
-// Where the signed-in user's email and token are kept in the browser
+// Where the signed-in user's email and first name are kept in the browser
 const EMAIL_KEY = "planora_email";
-const TOKEN_KEY = "planora_token";
+const FIRST_NAME_KEY = "planora_first_name";
 
 const emptyDigits = () => Array<string>(CODE_LENGTH).fill("");
 
@@ -131,69 +125,22 @@ const verifyResetCode = async (
   await new Promise((resolve) => setTimeout(resolve, 1500));
 };
 
-// Signs in with the backend. Sends { email, password } as JSON. Throws an
-// Error with a readable message if the email/password is wrong, the server
-// can't be reached, or it takes too long. Saves the token if the server
-// sends one back.
-const signInWithPassword = async (
-  email: string,
-  password: string,
-): Promise<void> => {
-  if (!email) {
-    throw new Error(
-      "We couldn't find your account email. Please sign up or log in again.",
-    );
-  }
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), LOGIN_TIMEOUT);
-
-  let res: Response;
-  try {
-    res = await fetch(LOGIN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
-      signal: controller.signal,
-    });
-  } catch (e) {
-    throw new Error(
-      e instanceof DOMException && e.name === "AbortError"
-        ? "The server took too long to respond. Please try again."
-        : "Couldn't reach the server. Check your connection and try again.",
-    );
-  } finally {
-    clearTimeout(timer);
-  }
-
-  // The body might not be JSON (for example a gateway error page)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const data: any = await res.json().catch(() => null);
-
-  if (!res.ok) {
-    const message = data?.message ?? data?.error;
-    throw new Error(
-      typeof message === "string" && message
-        ? message
-        : res.status === 401 || res.status === 400
-          ? "Incorrect email or password."
-          : "Sign in failed. Please try again.",
-    );
-  }
-
-  // Keep the token for later API calls. Adjust the field names to match what
-  // your backend returns.
-  const token = data?.token ?? data?.accessToken ?? data?.data?.token;
-  if (typeof token === "string" && token) writeStored(TOKEN_KEY, token);
-  writeStored(EMAIL_KEY, email);
-};
-
-const WelcomeBack = ({ name = "Adaeze", email: emailProp }: Props) => {
+const WelcomeBack = ({ name, email: emailProp }: Props) => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const routeState = location.state as { email?: string } | null;
+
+  const initialEmail = (
+    emailProp ??
+    routeState?.email ??
+    readStored(EMAIL_KEY)
+  ).trim();
+  const displayName = (name ?? readStored(FIRST_NAME_KEY)).trim();
 
   const [view, setView] = useState<View>("signin");
 
   // Sign in screen
+  const [signInEmail, setSignInEmail] = useState(initialEmail);
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
 
@@ -216,8 +163,8 @@ const WelcomeBack = ({ name = "Adaeze", email: emailProp }: Props) => {
   // Error shown on the sign in / forgot password / reset code screens
   const [errorMsg, setErrorMsg] = useState("");
 
-  // The Continue button only works once something has been typed
-  const canSubmit = password.length > 0;
+  // The Continue button only works once email and password have been typed
+  const canSubmit = signInEmail.trim().length > 0 && password.length > 0;
 
   // The reset button only works once the email looks valid
   const canReset = /^\S+@\S+\.\S+$/.test(email.trim());
@@ -256,23 +203,26 @@ const WelcomeBack = ({ name = "Adaeze", email: emailProp }: Props) => {
     setErrorMsg("");
     setView("loading");
     try {
-      const accountEmail = (emailProp ?? readStored(EMAIL_KEY)).trim();
+      const accountEmail = signInEmail.trim();
+      const res = await authApi.login({ email: accountEmail, password });
 
-      // 1. Use authApi.login directly from your client.ts
-      // This automatically calls saveTokens under the hood!
-      await authApi.login({ email: accountEmail, password });
+      writeStored(EMAIL_KEY, accountEmail);
+      const firstName = res.data?.user?.firstName;
+      if (typeof firstName === "string" && firstName.trim()) {
+        writeStored(FIRST_NAME_KEY, firstName.trim());
+      }
 
-      // 2. Tell the app someone is signed in
       markSignedIn();
-
-      // 3. Navigate to home page
       navigate(HOME_PATH, { replace: true });
     } catch (e) {
-      setErrorMsg(
-        e instanceof Error && e.message
-          ? e.message
-          : "Sign in failed. Please try again.",
-      );
+      let message = "Sign in failed. Please try again.";
+      if (axios.isAxiosError(e)) {
+        const data = e.response?.data as { message?: string } | undefined;
+        if (data?.message) message = data.message;
+      } else if (e instanceof Error && e.message) {
+        message = e.message;
+      }
+      setErrorMsg(message);
       setView("signin");
     }
   };
@@ -540,7 +490,7 @@ const WelcomeBack = ({ name = "Adaeze", email: emailProp }: Props) => {
             ) : (
               <>
                 <h1 className="text-[clamp(18px,5.5vw,22px)] leading-tight font-semibold break-words text-[#111827]">
-                  Welcome Back, {name}
+                  {displayName ? `Welcome Back, ${displayName}` : "Welcome Back"}
                 </h1>
                 <p className="text-[clamp(13px,3.8vw,14px)] font-normal text-[#6B7280]">
                   Not your account?{" "}
@@ -828,6 +778,32 @@ const WelcomeBack = ({ name = "Adaeze", email: emailProp }: Props) => {
                 }}
                 className="flex flex-col"
               >
+                <label
+                  htmlFor="signin-email"
+                  className="text-[14px] font-medium text-[#111827]"
+                >
+                  Email Address
+                </label>
+
+                <input
+                  id="signin-email"
+                  name="email"
+                  type="email"
+                  inputMode="email"
+                  autoComplete="email"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  placeholder="Enter Email Address"
+                  value={signInEmail}
+                  onChange={(e) => {
+                    setSignInEmail(e.target.value);
+                    setErrorMsg("");
+                  }}
+                  style={{ fontSize: "16px" }}
+                  className={`mt-2 mb-4 ${inputClass}`}
+                />
+
                 <label
                   htmlFor="password"
                   className="text-[14px] font-medium text-[#111827]"
