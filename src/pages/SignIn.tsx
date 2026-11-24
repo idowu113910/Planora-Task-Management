@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import axios from "axios";
 import {
   BsArrowLeft,
   BsCheckCircle,
@@ -11,7 +12,7 @@ import {
 } from "react-icons/bs";
 import planora from "../assets/planora.svg";
 import { markSignedIn } from "../auth";
-import { authApi, saveTokens } from "../api/client"; // Update this path to match your actual client.ts location
+import { authApi } from "../api/client"; // Update this path to match your actual client.ts location
 
 type Props = {
   // The returning user's first name, shown in the greeting
@@ -34,16 +35,14 @@ const TOAST_DURATION = 5000;
 // The page users land on after signing in. Change this to your home page route.
 const HOME_PATH = "/home";
 
-// Backend login endpoint
-const LOGIN_URL = "https://planora-uliy.onrender.com/api/auth/login";
-
 // How long to wait for the login request before giving up (milliseconds).
 // Render's free plan can take up to a minute to wake a sleeping server.
 const LOGIN_TIMEOUT = 60000;
 
-// Where the signed-in user's email and token are kept in the browser
+// Where the signed-in user's email is kept in the browser, so the greeting
+// screen knows which account to sign in to. The tokens themselves are saved by
+// client.ts.
 const EMAIL_KEY = "planora_email";
-const TOKEN_KEY = "planora_token";
 
 const emptyDigits = () => Array<string>(CODE_LENGTH).fill("");
 
@@ -108,7 +107,7 @@ const writeStored = (key: string, value: string) => {
   try {
     localStorage.setItem(key, value);
   } catch {
-    // storage unavailable: the user just won't stay signed in after a reload
+    // storage unavailable: the greeting screen just won't remember the email
   }
 };
 
@@ -131,61 +130,25 @@ const verifyResetCode = async (
   await new Promise((resolve) => setTimeout(resolve, 1500));
 };
 
-// Signs in with the backend. Sends { email, password } as JSON. Throws an
-// Error with a readable message if the email/password is wrong, the server
-// can't be reached, or it takes too long. Saves the token if the server
-// sends one back.
-const signInWithPassword = async (
-  email: string,
-  password: string,
-): Promise<void> => {
-  if (!email) {
-    throw new Error(
-      "We couldn't find your account email. Please sign up or log in again.",
-    );
+// Turns any login failure into a readable message for the user
+const getLoginError = (e: unknown): string => {
+  if (axios.isAxiosError<{ message?: string; error?: string }>(e)) {
+    // The request timed out (server still waking up, or very slow network)
+    if (e.code === "ECONNABORTED") {
+      return "The server took too long to respond. Please try again.";
+    }
+    // No response at all: offline, blocked by CORS, or server down
+    if (!e.response) {
+      return "Couldn't reach the server. Check your connection and try again.";
+    }
+    // The server answered with its own error message
+    const message = e.response.data?.message ?? e.response.data?.error;
+    if (typeof message === "string" && message) return message;
+    if (e.response.status === 400 || e.response.status === 401) {
+      return "Incorrect email or password.";
+    }
   }
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), LOGIN_TIMEOUT);
-
-  let res: Response;
-  try {
-    res = await fetch(LOGIN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
-      signal: controller.signal,
-    });
-  } catch (e) {
-    throw new Error(
-      e instanceof DOMException && e.name === "AbortError"
-        ? "The server took too long to respond. Please try again."
-        : "Couldn't reach the server. Check your connection and try again.",
-    );
-  } finally {
-    clearTimeout(timer);
-  }
-
-  // The body might not be JSON (for example a gateway error page)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const data: any = await res.json().catch(() => null);
-
-  if (!res.ok) {
-    const message = data?.message ?? data?.error;
-    throw new Error(
-      typeof message === "string" && message
-        ? message
-        : res.status === 401 || res.status === 400
-          ? "Incorrect email or password."
-          : "Sign in failed. Please try again.",
-    );
-  }
-
-  // Keep the token for later API calls. Adjust the field names to match what
-  // your backend returns.
-  const token = data?.token ?? data?.accessToken ?? data?.data?.token;
-  if (typeof token === "string" && token) writeStored(TOKEN_KEY, token);
-  writeStored(EMAIL_KEY, email);
+  return "Sign in failed. Please try again.";
 };
 
 const WelcomeBack = ({ name = "Adaeze", email: emailProp }: Props) => {
@@ -257,15 +220,30 @@ const WelcomeBack = ({ name = "Adaeze", email: emailProp }: Props) => {
     setView("loading");
     try {
       const accountEmail = (emailProp ?? readStored(EMAIL_KEY)).trim();
+      if (!accountEmail) {
+        throw new Error(
+          "We couldn't find your account email. Please sign up or log in again.",
+        );
+      }
 
-      // 1. Use authApi.login directly from your client.ts
-      // This automatically calls saveTokens under the hood!
-      await authApi.login({ email: accountEmail, password });
+      // 1. Sign in through client.ts. It saves the tokens itself, so the home
+      // page can ask /auth/me who is signed in.
+      try {
+        await authApi.login(
+          { email: accountEmail, password },
+          { timeout: LOGIN_TIMEOUT },
+        );
+      } catch (loginError) {
+        throw new Error(getLoginError(loginError));
+      }
 
-      // 2. Tell the app someone is signed in
+      // 2. Remember the email for the greeting screen
+      writeStored(EMAIL_KEY, accountEmail);
+
+      // 3. Tell the app someone is signed in
       markSignedIn();
 
-      // 3. Navigate to home page
+      // 4. Navigate to home page
       navigate(HOME_PATH, { replace: true });
     } catch (e) {
       setErrorMsg(
