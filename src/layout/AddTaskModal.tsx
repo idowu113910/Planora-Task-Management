@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { addTask } from "../layout/taskStore";
 import { showToast } from "./Toast";
+import { createTask, taskErrorMessage } from "../api/taskApi";
 import {
   FiX,
   FiHash,
@@ -385,6 +386,8 @@ const AddTaskModal = ({
   const [priority, setPriority] = useState(initial?.priority ?? "High");
 
   const [pickingDate, setPickingDate] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
 
   const backdropRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -502,9 +505,9 @@ const AddTaskModal = ({
         })
       : "Today");
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (title.trim() === "" || timeIncomplete) return;
+    if (title.trim() === "" || timeIncomplete || saving) return;
 
     const task: NewTask = {
       title: title.trim(),
@@ -518,16 +521,25 @@ const AddTaskModal = ({
       // The page that opened the sheet saves the changes
       onSubmit?.(task);
       showToast("Task Updated", "Task has been updated successfully.");
-    } else {
-      // Saves the task where the Home page can find it (a "High" task shows up
-      // under High Priority there)
-      addTask(task);
-
-      // TODO: also send this to your backend. When you do, add it to the list,
-      // show the toast and close only after the request succeeds.
-      onSubmit?.(task);
-      showToast("Task Added", "Task has been added successfully.");
+      close();
+      return;
     }
+
+    // New task: send it to the backend first, and only close once it is saved
+    setSaving(true);
+    setSaveError("");
+    try {
+      await createTask(task);
+    } catch (error) {
+      setSaveError(taskErrorMessage(error));
+      setSaving(false);
+      return;
+    }
+
+    // Keep the local copy the Home, Inbox and Project pages read from
+    addTask(task);
+    onSubmit?.(task);
+    showToast("Task Added", "Task has been added successfully.");
     close();
   };
 
@@ -696,6 +708,15 @@ const AddTaskModal = ({
             />
           </div>
 
+          {saveError && (
+            <p
+              role="alert"
+              className="mt-4 text-[0.75rem] font-normal text-[#E74C3C]"
+            >
+              {saveError}
+            </p>
+          )}
+
           <div className="mt-6 flex flex-wrap justify-end gap-3">
             {editing && (
               <button
@@ -708,10 +729,12 @@ const AddTaskModal = ({
             )}
             <button
               type="submit"
-              disabled={title.trim() === "" || timeIncomplete}
+              disabled={title.trim() === "" || timeIncomplete || saving}
               className="flex min-h-11 touch-manipulation items-center gap-2 rounded-xl bg-[#1A7431] px-4 text-[0.875rem] whitespace-nowrap text-white disabled:cursor-not-allowed disabled:opacity-40"
             >
-              {editing ? (
+              {saving ? (
+                "Saving..."
+              ) : editing ? (
                 "Save changes"
               ) : (
                 <>
