@@ -4,6 +4,9 @@
       "source": "/api/:path*",
       "destination": "https://planora-uliy.onrender.com/api/:path*"
     },
-    { "source": "/((?!api/).*)", "destination": "/index.html" }
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
   ]
 }
