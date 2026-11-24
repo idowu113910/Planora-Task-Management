@@ -114,6 +114,8 @@ const SKIP_REFRESH = [
   "/auth/signup",
   "/auth/oauth",
   "/auth/logout",
+  "/auth/verify-email",
+  "/auth/send-verification-otp",
 ];
 
 api.interceptors.response.use(
@@ -220,6 +222,12 @@ export const authApi = {
     noteIfNoToken(saveTokens(res.data, res.headers), "sign-in");
     return res;
   },
+  sendVerificationOtp: (email: string, config?: AxiosRequestConfig) =>
+    api.post("/auth/send-verification-otp", { email }, config),
+  verifyEmail: (
+    data: { email: string; code: string },
+    config?: AxiosRequestConfig,
+  ) => api.post("/auth/verify-email", data, config),
   refresh: () =>
     api.post("/auth/refresh", {
       refreshToken: localStorage.getItem(REFRESH_KEY) ?? "",

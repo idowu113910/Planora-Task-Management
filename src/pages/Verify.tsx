@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
+import axios from "axios";
 import { BsChevronLeft } from "react-icons/bs";
 import planora from "../assets/planora.svg";
-import { markSignedIn } from "../auth";
+import { authApi, clearTokens } from "../api/client";
 import { showToast } from "../layout/Toast";
 
 // Which screen is showing. All screens live in this one component.
@@ -18,11 +19,10 @@ const CODE_LENGTH = 4;
 const RESEND_SECONDS = 30;
 
 // The page users land on once their account is verified
-const HOME_PATH = "/home";
+const SIGNIN_PATH = "/signin";
 
-// Storage keys shared with SignUp and Home
+// Storage key shared with SignUp
 const EMAIL_KEY = "planora_email";
-const FIRST_NAME_KEY = "planora_first_name";
 
 const emptyDigits = () => Array<string>(CODE_LENGTH).fill("");
 
@@ -39,21 +39,28 @@ const readStored = (key: string): string => {
 const inputClass =
   "h-11 w-full min-w-0 rounded-xl border-[0.5px] border-[#E5EAF1] bg-white px-4 text-[16px] leading-normal font-normal text-[#111827] outline-none placeholder:text-[#C6CCD3] focus:border-[#1A7431]";
 
-// TODO: replace the body with your real "send verification code" request. It
-// should email a new 4-digit code to the address, and throw an Error (with a
-// readable message) if it couldn't be sent. A browser can't send email by
-// itself, so no email goes out until this is connected to your backend.
-// The short wait below only stands in for the network call, so the loading
-// screen can be seen while you build the backend.
-const sendVerificationCode = async (_email: string): Promise<void> => {
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+const extractApiError = (error: unknown, fallback: string): string => {
+  if (axios.isAxiosError(error)) {
+    const data = error.response?.data as { message?: string } | undefined;
+    if (data?.message) return data.message;
+  }
+  return error instanceof Error && error.message ? error.message : fallback;
 };
 
-// TODO: replace the body with your real "check the code" request. It should
-// throw an Error (with a readable message) if the code is wrong or expired.
-// Until you connect your backend, every code is accepted.
-const verifyCode = async (_email: string, _code: string): Promise<void> => {
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+const sendVerificationCode = async (email: string): Promise<void> => {
+  try {
+    await authApi.sendVerificationOtp(email);
+  } catch (error) {
+    throw new Error(extractApiError(error, "Couldn't send the code. Please try again."));
+  }
+};
+
+const verifyCode = async (email: string, code: string): Promise<void> => {
+  try {
+    await authApi.verifyEmail({ email, code });
+  } catch (error) {
+    throw new Error(extractApiError(error, "That code didn't work. Please try again."));
+  }
 };
 
 const Verify = () => {
@@ -69,19 +76,22 @@ const Verify = () => {
   } | null;
 
   const startEmail = routeState?.email?.trim() || readStored(EMAIL_KEY).trim();
-  const firstName =
-    routeState?.firstName?.trim() || readStored(FIRST_NAME_KEY).trim();
+  const cameFromSignup = Boolean(routeState?.email?.trim());
 
   const [email, setEmail] = useState(startEmail);
-  // With an address already known, a code is sent as soon as the page opens
-  const [view, setView] = useState<View>(startEmail ? "loading" : "email");
+  // Signup already sends the OTP, so open the code view directly when coming from signup.
+  const [view, setView] = useState<View>(
+    cameFromSignup ? "code" : startEmail ? "loading" : "email",
+  );
 
   const [digits, setDigits] = useState<string[]>(emptyDigits);
   const codeRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   const [errorMsg, setErrorMsg] = useState("");
-  const [secondsLeft, setSecondsLeft] = useState(0);
-  const autoSent = useRef(false);
+  const [secondsLeft, setSecondsLeft] = useState(
+    cameFromSignup ? RESEND_SECONDS : 0,
+  );
+  const autoSent = useRef(cameFromSignup);
 
   const canSend = /^\S+@\S+\.\S+$/.test(email.trim());
   const canVerify = digits.every((d) => d !== "");
@@ -145,16 +155,14 @@ const Verify = () => {
     setView("loading");
     try {
       await verifyCode(email.trim(), digits.join(""));
-      // Tell the app someone is signed in, or ProtectedRoute would send them
-      // straight back to the sign in page
-      markSignedIn();
+      clearTokens();
       showToast(
         "Account Verified Successfully",
-        "Please close this alert and get right into Planora",
+        "Please sign in with your email and password",
       );
-      navigate(HOME_PATH, {
+      navigate(SIGNIN_PATH, {
         replace: true,
-        state: { firstName },
+        state: { email: email.trim() },
       });
     } catch (e) {
       setErrorMsg(
