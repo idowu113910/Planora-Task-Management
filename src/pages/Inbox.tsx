@@ -2,7 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { FiMoreHorizontal, FiEdit2, FiTrash2, FiCheck } from "react-icons/fi";
 import box from "../assets/inbox.svg";
-import { useTasks } from "../layout/taskStore";
+import {
+  useTasks,
+  refreshTasks,
+  updateTaskRemote,
+  deleteTaskRemote,
+} from "../layout/taskStore";
 import type { Task } from "../layout/taskStore";
 import AddTaskModal from "../layout/AddTaskModal";
 import type { NewTask } from "../layout/AddTaskModal";
@@ -451,6 +456,11 @@ const CompletedItem = ({ task }: { task: Task }) => (
 const Inbox = () => {
   const [activeTab, setActiveTab] = useState<Tab>("All");
   const storeTasks = useTasks();
+
+  // Load this person's tasks from the backend when the page opens
+  useEffect(() => {
+    refreshTasks();
+  }, []);
   const [status, setStatus] = useState<Status>(loadStatus);
   // Which "..." menu is open (one at a time)
   const [openMenu, setOpenMenu] = useState<string | null>(null);
@@ -465,6 +475,7 @@ const Inbox = () => {
   useEffect(() => saveStatus(status), [status]);
 
   const saveEdit = (task: Task, updated: NewTask) => {
+    updateTaskRemote(String(task.id), updated);
     setStatus((s) => ({
       ...s,
       edits: { ...s.edits, [String(task.id)]: updated },
@@ -472,6 +483,7 @@ const Inbox = () => {
   };
 
   const removeTask = (task: Task) => {
+    deleteTaskRemote(String(task.id));
     setStatus((s) => ({
       ...s,
       deleted: s.deleted.includes(String(task.id))

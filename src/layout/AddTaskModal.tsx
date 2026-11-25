@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
-import { addTask } from "../layout/taskStore";
+import { addTask, refreshTasks } from "../layout/taskStore";
 import { showToast } from "./Toast";
 import { createTask, taskErrorMessage } from "../api/taskApi";
 import {
@@ -528,8 +528,11 @@ const AddTaskModal = ({
     // New task: send it to the backend first, and only close once it is saved
     setSaving(true);
     setSaveError("");
+    let newId: string | undefined;
     try {
-      await createTask(task);
+      const saved = await createTask(task);
+      const rawId = saved.id ?? saved._id;
+      if (rawId !== undefined && rawId !== null) newId = String(rawId);
     } catch (error) {
       setSaveError(taskErrorMessage(error));
       setSaving(false);
@@ -537,7 +540,8 @@ const AddTaskModal = ({
     }
 
     // Keep the local copy the Home, Inbox and Project pages read from
-    addTask(task);
+    addTask(task, newId);
+    refreshTasks();
     onSubmit?.(task);
     showToast("Task Added", "Task has been added successfully.");
     close();

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { MdOutlineKeyboardArrowRight } from "react-icons/md";
 import { FiCheck, FiChevronLeft, FiMoreHorizontal, FiX } from "react-icons/fi";
 import { GoPlus } from "react-icons/go";
-import { useTasks } from "../layout/taskStore";
+import { useTasks, refreshTasks } from "../layout/taskStore";
 import type { Task } from "../layout/taskStore";
 
 type ProjectDef = { name: string; color: string };
@@ -379,6 +379,11 @@ const loadStatus = (): Status => {
 
 const Project = () => {
   const storeTasks = useTasks();
+
+  // Load this person's tasks from the backend when the page opens
+  useEffect(() => {
+    refreshTasks();
+  }, []);
   const [status] = useState<Status>(loadStatus);
   // The project that was tapped (its tasks are shown), or null for the list
   const [selected, setSelected] = useState<string | null>(null);

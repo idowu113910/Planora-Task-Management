@@ -9,7 +9,13 @@ import head from "../assets/baby head.svg";
 import priority from "../assets/Priority.svg";
 import blue from "../assets/blue.svg";
 import green from "../assets/Green.svg";
-import { useTasks } from "../layout/taskStore";
+import {
+  useTasks,
+  refreshTasks,
+  updateTaskRemote,
+  deleteTaskRemote,
+  completeTaskRemote,
+} from "../layout/taskStore";
 import type { Task } from "../layout/taskStore";
 import AddTaskModal from "../layout/AddTaskModal";
 import { showToast } from "../layout/Toast";
@@ -584,6 +590,11 @@ const Home = ({ name, completedTasks, totalTasks }: Props) => {
 
   const storeTasks = useTasks();
 
+  // Load this person's tasks from the backend when the page opens
+  useEffect(() => {
+    refreshTasks();
+  }, []);
+
   const [status, setStatus] = useState<Status>(loadStatus);
   // The task being edited (its sheet is open)
   const [editingTask, setEditingTask] = useState<Task | null>(null);
@@ -604,6 +615,7 @@ const Home = ({ name, completedTasks, totalTasks }: Props) => {
   useEffect(() => saveStatus(status), [status]);
 
   const markDone = (task: Task) => {
+    completeTaskRemote(task);
     setStatus((s) => ({
       ...s,
       done: { ...s.done, [String(task.id)]: Date.now() },
@@ -613,6 +625,7 @@ const Home = ({ name, completedTasks, totalTasks }: Props) => {
 
   // Saves the edited details (the sheet shows the "Task Updated" message itself)
   const saveEdit = (task: Task, updated: NewTask) => {
+    updateTaskRemote(String(task.id), updated);
     setStatus((s) => ({
       ...s,
       edits: { ...s.edits, [String(task.id)]: updated },
@@ -620,6 +633,7 @@ const Home = ({ name, completedTasks, totalTasks }: Props) => {
   };
 
   const removeTask = (task: Task) => {
+    deleteTaskRemote(String(task.id));
     setStatus((s) => ({
       ...s,
       deleted: s.deleted.includes(String(task.id))
