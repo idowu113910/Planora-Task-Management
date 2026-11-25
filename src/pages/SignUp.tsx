@@ -12,6 +12,7 @@ import { FaApple } from "react-icons/fa6";
 import { FcGoogle } from "react-icons/fc";
 import { useNavigate } from "react-router-dom";
 import { authApi } from "../api/client";
+import { markSignedIn } from "../auth";
 
 // Where to go after signing up with email: the verification page, which then
 // takes the person to the home page once their code is right
@@ -48,6 +49,14 @@ const APPLE_CLIENT_ID = import.meta.env.VITE_APPLE_CLIENT_ID as
 const APPLE_REDIRECT_URI =
   (import.meta.env.VITE_APPLE_REDIRECT_URI as string | undefined) ??
   (typeof window !== "undefined" ? window.location.origin : "");
+
+// The endpoint the Apple and Google buttons send their token to:
+//   POST https://planora-uliy.onrender.com/api/auth/oauth
+const API_ORIGIN = (
+  (import.meta.env.VITE_API_URL as string | undefined) ??
+  "https://planora-uliy.onrender.com"
+).replace(/\/+$/, "");
+const OAUTH_URL = `${API_ORIGIN}/api/auth/oauth`;
 
 const GOOGLE_SDK = "https://accounts.google.com/gsi/client";
 const APPLE_SDK =
@@ -160,6 +169,26 @@ const readUserInfo = (
       ? userObj.firstName
       : undefined;
   return { email, firstName };
+};
+
+// Keeps the login tokens the server sends back (wherever it puts them), the same
+// way the normal sign in does, so the next requests are signed in
+const saveTokens = (data: unknown) => {
+  if (!data || typeof data !== "object") return;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const body = data as Record<string, any>;
+  const find = (key: string): string | undefined => {
+    const value =
+      body[key] ??
+      body.data?.[key] ??
+      body.tokens?.[key] ??
+      body.data?.tokens?.[key];
+    return typeof value === "string" && value ? value : undefined;
+  };
+  const access = find("accessToken") ?? find("access_token");
+  const refresh = find("refreshToken") ?? find("refresh_token");
+  if (access) writeStored("accessToken", access);
+  if (refresh) writeStored("refreshToken", refresh);
 };
 
 // Sends the sign-up to the backend. The backend sets the session cookies
@@ -318,13 +347,21 @@ const signInWithProvider = async (
   }
 
   try {
-    const res = await authApi.oauth(
+    const res = await axios.post(
+      OAUTH_URL,
       { provider, token, ...(user ? { user } : {}) },
-      { timeout: REQUEST_TIMEOUT_MS },
+      {
+        timeout: REQUEST_TIMEOUT_MS,
+        withCredentials: true,
+        headers: { "Content-Type": "application/json" },
+      },
     );
+    saveTokens(res.data);
     const { email, firstName } = readUserInfo(res.data);
     if (email) writeStored(EMAIL_KEY, email);
     if (firstName) writeStored(FIRST_NAME_KEY, firstName);
+    // Tell the app someone is signed in, so the home page opens
+    markSignedIn();
     return { firstName };
   } catch (e) {
     throw new Error(
