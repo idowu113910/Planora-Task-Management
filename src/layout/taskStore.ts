@@ -183,9 +183,9 @@ export const fromServer = (raw: ServerTask): Task | null => {
         : text(body.projectName);
 
   const rawDate =
-    text(body.date) ||
     text(body.dueDate) ||
     text(body.due_date) ||
+    text(body.date) ||
     text(body.dueAt) ||
     text(body.deadline) ||
     text(body.scheduledAt) ||
@@ -211,15 +211,35 @@ export const fromServer = (raw: ServerTask): Task | null => {
   const id = String(rawId);
   const title = text(body.title) || text(body.name);
   const all = readWhen();
-  const remembered = all[id] ?? all[sigOf(title, projectName || "Work")];
+  const serverDay = toDay(
+    text(body.dueDate) ||
+      text(body.due_date) ||
+      text(body.date) ||
+      text(body.dueAt) ||
+      text(body.deadline) ||
+      text(body.scheduledAt) ||
+      text(body.startDate),
+  );
+  // Matched by id first. Title and project are only used when the server sent
+  // no readable date, since two tasks can share a title.
+  const remembered =
+    all[id] ??
+    (serverDay ? undefined : all[sigOf(title, projectName || "Work")]);
   const serverDate = toDay(rawDate);
   // The server's date when it has a readable one, otherwise the one chosen
   // here, otherwise today. It is never left empty, so no screen can show
   // "Invalid Date".
-  const date = serverDate || remembered?.date || localDay(new Date());
-  const time = rawTime ? rawTime.slice(0, 5) : (remembered?.time ?? "");
-  if (isDay(serverDate))
+  // The day chosen on this device wins: the server may send back a day of its
+  // own (such as the day the task was created) instead of the one picked.
+  const date = remembered?.date || serverDate || localDay(new Date());
+  const time = remembered
+    ? remembered.time
+    : rawTime
+      ? rawTime.slice(0, 5)
+      : "";
+  if (!remembered && serverDate) {
     rememberWhen(id, serverDate, time, title, projectName || "Work");
+  }
 
   return {
     id,
