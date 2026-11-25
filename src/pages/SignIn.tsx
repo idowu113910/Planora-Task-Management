@@ -36,6 +36,15 @@ const TOAST_DURATION = 5000;
 // The page users land on after signing in. Change this to your home page route.
 const HOME_PATH = "/home";
 
+// The same password endpoints the Settings page uses
+const AUTH_API = "https://planora-uliy.onrender.com/api/auth";
+const FORGOT_PASSWORD_URL = `${AUTH_API}/forgot-password`;
+const VERIFY_RESET_CODE_URL = `${AUTH_API}/verify-reset-code`;
+const RESET_PASSWORD_URL = `${AUTH_API}/reset-password`;
+
+// Render's free plan can take up to a minute to wake a sleeping server
+const RESET_TIMEOUT = 60000;
+
 // How long to wait for the login request before giving up (milliseconds).
 // Render's free plan can take up to a minute to wake a sleeping server.
 const LOGIN_TIMEOUT = 60000;
@@ -156,23 +165,90 @@ const readPersonName = (data: unknown): string => {
   );
 };
 
-// TODO: replace the body with your real "send reset code" request. It should
-// throw an Error (with a readable message) if the code couldn't be sent.
-// The short wait below only stands in for the network call, so the loading
-// screen can be seen while you build the backend.
-const sendResetCode = async (_email: string): Promise<void> => {
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+// Turns a failed password request into a readable message. Validation errors
+// from the server list the exact problem under "details".
+const getResetError = (e: unknown, fallback: string): string => {
+  if (axios.isAxiosError(e)) {
+    if (e.code === "ECONNABORTED") {
+      return "The server took too long to respond. Please try again.";
+    }
+    if (!e.response) {
+      return "Couldn't reach the server. Check your connection and try again.";
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data = e.response.data as Record<string, any> | undefined;
+    const detail = Array.isArray(data?.details) ? data?.details[0]?.msg : "";
+    if (typeof detail === "string" && detail) return detail;
+    const message = data?.message ?? data?.error;
+    if (typeof message === "string" && message) return message;
+    if (e.response.status === 429) {
+      return "Too many attempts. Please wait a moment and try again.";
+    }
+    if (e.response.status >= 500) {
+      return "Something went wrong on our side. Please try again shortly.";
+    }
+  }
+  return fallback;
 };
 
-// TODO: replace the body with your real "verify code" request. It should
-// throw an Error (with a readable message) if the code is wrong or expired.
-// The short wait below only stands in for the network call, so the loading
-// screen can be seen. Until you connect your backend, every code is accepted.
+const resetPost = (url: string, body: Record<string, unknown>) =>
+  axios.post(url, body, { timeout: RESET_TIMEOUT, withCredentials: true });
+
+// 1. Emails a reset code to the address
+const sendResetCode = async (email: string): Promise<void> => {
+  try {
+    await resetPost(FORGOT_PASSWORD_URL, { email });
+  } catch (e) {
+    throw new Error(
+      getResetError(
+        e,
+        "We couldn't send the code. Please check the email address and try again.",
+      ),
+    );
+  }
+};
+
+// 2. Checks the code. The server answers with a resetToken, which step 3 needs.
 const verifyResetCode = async (
-  _email: string,
-  _code: string,
+  email: string,
+  code: string,
+): Promise<string> => {
+  if (!new RegExp(`^\\d{${CODE_LENGTH}}$`).test(code)) {
+    throw new Error(`Please enter all ${CODE_LENGTH} digits of the code.`);
+  }
+  let data: unknown;
+  try {
+    data = (await resetPost(VERIFY_RESET_CODE_URL, { email, code })).data;
+  } catch (e) {
+    throw new Error(
+      getResetError(e, "That code didn't work. Please check it and try again."),
+    );
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const body = (data ?? {}) as Record<string, any>;
+  const token = body.resetToken ?? body.token ?? body.data?.resetToken;
+  if (typeof token !== "string" || !token) {
+    throw new Error("We couldn't verify the code. Please try again.");
+  }
+  return token;
+};
+
+// 3. Sets the new password, using the resetToken from step 2
+const resetPassword = async (
+  resetToken: string,
+  newPassword: string,
 ): Promise<void> => {
-  await new Promise((resolve) => setTimeout(resolve, 1500));
+  try {
+    await resetPost(RESET_PASSWORD_URL, {
+      resetToken,
+      newPassword,
+      confirmPassword: newPassword,
+    });
+  } catch (e) {
+    throw new Error(
+      getResetError(e, "We couldn't reset your password. Please try again."),
+    );
+  }
 };
 
 // Turns any login failure into a readable message for the user
@@ -226,6 +302,8 @@ const WelcomeBack = ({ name: nameProp, email: emailProp }: Props) => {
 
   // Reset code screen: one entry per box
   const [digits, setDigits] = useState<string[]>(emptyDigits);
+  // Given by the server once the code is right; needed to set the password
+  const [resetToken, setResetToken] = useState("");
   const codeRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   // Create new password screen
@@ -342,10 +420,11 @@ const WelcomeBack = ({ name: nameProp, email: emailProp }: Props) => {
     setErrorMsg("");
   };
 
-  // Opens the forgot password screen with the sign in email already filled in
+  // Opens the forgot password screen. An email the person typed is carried
+  // over, but a remembered email is never shown, so they type it themselves.
   const openForgot = () => {
     setErrorMsg("");
-    setEmail((prev) => prev || accountEmail);
+    setEmail((prev) => prev || (returningMode ? "" : accountEmail));
     setView("forgot");
   };
 
@@ -383,7 +462,7 @@ const WelcomeBack = ({ name: nameProp, email: emailProp }: Props) => {
     setErrorMsg("");
     setView("loading");
     try {
-      await verifyResetCode(email.trim(), digits.join(""));
+      setResetToken(await verifyResetCode(email.trim(), digits.join("")));
       setNewPassword("");
       setConfirmPassword("");
       setShowNew(false);
@@ -400,11 +479,21 @@ const WelcomeBack = ({ name: nameProp, email: emailProp }: Props) => {
     }
   };
 
-  const handleCreatePassword = () => {
-    if (!canCreate) return;
-    // TODO: connect to your reset-password endpoint
-    // (send `email`, the code digits.join("") and `newPassword`).
-    // When you do, run the lines below only after the request succeeds.
+  const handleCreatePassword = async () => {
+    if (!canCreate || !resetToken) return;
+    setErrorMsg("");
+    setView("loading");
+    try {
+      await resetPassword(resetToken, newPassword);
+    } catch (e) {
+      setErrorMsg(
+        e instanceof Error && e.message
+          ? e.message
+          : "We couldn't reset your password. Please try again.",
+      );
+      setView("newPassword");
+      return;
+    }
 
     // Back to the sign in screen, with everything from the reset cleared
     setPassword("");
@@ -414,6 +503,7 @@ const WelcomeBack = ({ name: nameProp, email: emailProp }: Props) => {
     setShowNew(false);
     setShowConfirm(false);
     setDigits(emptyDigits());
+    setResetToken("");
     setErrorMsg("");
     setShowToast(false);
     setView("signin");
@@ -606,15 +696,12 @@ const WelcomeBack = ({ name: nameProp, email: emailProp }: Props) => {
                 </p>
               </>
             ) : returningMode ? (
-              /* Someone this device remembers: their name from sign up, and
-                 the email they signed up with */
+              /* Someone this device remembers: only their name from sign up is
+                 shown. The email is used for sign in but never displayed. */
               <>
                 <h1 className="text-[clamp(18px,5.5vw,22px)] leading-tight font-semibold break-words text-[#111827]">
                   Welcome Back{rememberedName ? `, ${rememberedName}` : ""}
                 </h1>
-                <p className="text-[clamp(13px,3.8vw,14px)] font-normal break-all text-[#6B7280]">
-                  {rememberedEmail}
-                </p>
                 <p className="text-[clamp(13px,3.8vw,14px)] font-normal text-[#6B7280]">
                   Not you?{" "}
                   <button
@@ -746,11 +833,23 @@ const WelcomeBack = ({ name: nameProp, email: emailProp }: Props) => {
                 </button>
               </form>
 
+              {errorMsg && (
+                <p
+                  role="alert"
+                  className="mt-3 text-center text-[12px] font-normal text-[#E74C3C]"
+                >
+                  {errorMsg}
+                </p>
+              )}
+
               {/* Back pill, pushed to the bottom right of the sheet */}
               <div className="mt-auto flex justify-end pt-8">
                 <button
                   type="button"
-                  onClick={() => setView("code")}
+                  onClick={() => {
+                    setErrorMsg("");
+                    setView("code");
+                  }}
                   className="flex h-10 touch-manipulation items-center gap-2 rounded-xl bg-[#F1F4F8] px-4 text-[13px] font-medium text-[#111827]"
                 >
                   <BsChevronLeft size={12} aria-hidden="true" />
