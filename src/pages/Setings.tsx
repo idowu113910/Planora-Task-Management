@@ -22,6 +22,7 @@ import {
   FiEyeOff,
   FiRefreshCw,
 } from "react-icons/fi";
+import { authApi } from "../api/client";
 
 type Screen =
   | "settings"
@@ -149,16 +150,69 @@ const PROFILE_KEY = "profileData";
 // so it always fits in browser storage
 const MAX_PHOTO_SIZE = 256;
 
-// Reads the saved profile (or the defaults if nothing was saved yet)
+// Where the sign up and home screens keep the account's name and email
+const ACCOUNT_EMAIL_KEY = "planora_email";
+const ACCOUNT_FIRST_NAME_KEY = "planora_first_name";
+const ACCOUNT_LAST_NAME_KEY = "planora_last_name";
+const ACCOUNT_FULL_NAME_KEY = "planora_full_name";
+
+const readAccountValue = (key: string): string => {
+  try {
+    return localStorage.getItem(key)?.trim() ?? "";
+  } catch {
+    return "";
+  }
+};
+
+const writeAccountValue = (key: string, value: string) => {
+  try {
+    if (value) localStorage.setItem(key, value);
+  } catch {
+    // storage unavailable: it is simply not remembered
+  }
+};
+
+// The name and email the account was created with (empty if not known yet)
+const loadAccountDetails = (): { name: string; email: string } => {
+  const full = readAccountValue(ACCOUNT_FULL_NAME_KEY);
+  const joined = [
+    readAccountValue(ACCOUNT_FIRST_NAME_KEY),
+    readAccountValue(ACCOUNT_LAST_NAME_KEY),
+  ]
+    .filter(Boolean)
+    .join(" ");
+  return {
+    name: full || joined,
+    email: readAccountValue(ACCOUNT_EMAIL_KEY),
+  };
+};
+
+// True once the person has saved their own changes on the Edit screen
+const hasSavedProfile = (): boolean => {
+  try {
+    return localStorage.getItem(PROFILE_KEY) !== null;
+  } catch {
+    return false;
+  }
+};
+
+// Reads the saved profile. Anything the person has not changed themselves comes
+// from the account they signed up with, then from the defaults.
 const loadProfile = (): ProfileData => {
+  const account = loadAccountDetails();
+  const base: ProfileData = {
+    name: account.name || initialProfile.name,
+    email: account.email || initialProfile.email,
+    photo: initialProfile.photo,
+  };
   try {
     const raw = localStorage.getItem(PROFILE_KEY);
     if (raw) {
       const saved = JSON.parse(raw);
       if (typeof saved?.name === "string" && typeof saved?.email === "string") {
         return {
-          name: saved.name,
-          email: saved.email,
+          name: saved.name || base.name,
+          email: saved.email || base.email,
           // No saved picture means the default avatar
           photo:
             typeof saved.photo === "string" && saved.photo
@@ -168,9 +222,9 @@ const loadProfile = (): ProfileData => {
       }
     }
   } catch {
-    // storage unavailable or damaged: fall back to the defaults
+    // storage unavailable or damaged: fall back to the account details
   }
-  return initialProfile;
+  return base;
 };
 
 // Saves the profile. Returns false if the browser refused (full or blocked).
@@ -2337,6 +2391,59 @@ const Setings = () => {
   const navigate = useNavigate();
 
   const closeEdit = useCallback(() => setIsEditing(false), []);
+
+  // Gets the account's real name and email from the backend (/auth/me), so the
+  // Profile screen is right even after signing in again or clearing the browser.
+  // Details the person saved themselves on the Edit screen are left alone.
+  useEffect(() => {
+    let cancelled = false;
+    authApi
+      .me()
+      .then((res) => {
+        if (cancelled) return;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const data = res.data as Record<string, any>;
+        const user = data?.user ?? data?.data?.user ?? data;
+        const first =
+          typeof user?.firstName === "string"
+            ? user.firstName
+            : typeof user?.first_name === "string"
+              ? user.first_name
+              : "";
+        const last =
+          typeof user?.lastName === "string"
+            ? user.lastName
+            : typeof user?.last_name === "string"
+              ? user.last_name
+              : "";
+        const full =
+          typeof user?.fullName === "string" && user.fullName.trim()
+            ? user.fullName.trim()
+            : typeof user?.name === "string" && user.name.trim()
+              ? user.name.trim()
+              : [first, last].filter(Boolean).join(" ");
+        const email = typeof user?.email === "string" ? user.email.trim() : "";
+
+        writeAccountValue(ACCOUNT_FULL_NAME_KEY, full);
+        writeAccountValue(ACCOUNT_FIRST_NAME_KEY, first);
+        writeAccountValue(ACCOUNT_LAST_NAME_KEY, last);
+        writeAccountValue(ACCOUNT_EMAIL_KEY, email);
+
+        if (!hasSavedProfile() && (full || email)) {
+          setProfileData((prev) => ({
+            ...prev,
+            name: full || prev.name,
+            email: email || prev.email,
+          }));
+        }
+      })
+      .catch(() => {
+        // keep what is already shown
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Hide the success message after a moment
   useEffect(() => {
