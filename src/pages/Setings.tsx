@@ -24,6 +24,8 @@ import {
 } from "react-icons/fi";
 import { authApi } from "../api/client";
 import { markSignedOut } from "../auth";
+import { THEME_LABELS, setThemePreference, useThemePreference } from "../layout/Theme.";
+import type { ThemePreference } from "../layout/Theme.";
 
 type Screen =
   | "settings"
@@ -1140,11 +1142,11 @@ const NotificationsScreen = ({ onBack }: { onBack: () => void }) => {
 };
 
 // The Theme screen, shown inside the Settings page
-const themeOptions = ["System", "Light", "Dark"];
+const themeOptions: ThemePreference[] = ["system", "light", "dark"];
 
 const ThemeScreen = ({ onBack }: { onBack: () => void }) => {
-  // Which option is picked. Starts on System, as in the design.
-  const [selected, setSelected] = useState("System");
+  // Which option is picked. It is saved, and the whole app follows it.
+  const selected = useThemePreference();
 
   return (
     <>
@@ -1185,10 +1187,10 @@ const ThemeScreen = ({ onBack }: { onBack: () => void }) => {
                   type="button"
                   role="radio"
                   aria-checked={isSelected}
-                  onClick={() => setSelected(option)}
+                  onClick={() => setThemePreference(option)}
                   className="flex w-full touch-manipulation items-center justify-between gap-3 py-4 text-left text-[0.875rem] font-normal text-[#111827] min-[360px]:gap-4"
                 >
-                  {option}
+                  {THEME_LABELS[option]}
 
                   <span
                     className={`flex h-4 w-4 shrink-0 items-center justify-center rounded-full ${
@@ -2962,14 +2964,18 @@ const Setings = () => {
     return "";
   };
 
-  // The Profile row shows the saved name and email
+  // The Profile row shows the saved name and email, and the Theme row the
+  // chosen theme
+  const themePreference = useThemePreference();
   const accountList = accountItems.map((item) =>
     item.opens === "profile"
       ? {
           ...item,
           description: `${profileData.name} · ${profileData.email}`,
         }
-      : item,
+      : item.opens === "theme"
+        ? { ...item, description: THEME_LABELS[themePreference] }
+        : item,
   );
 
   return (
