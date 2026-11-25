@@ -106,7 +106,14 @@ export const fromServer = (raw: ServerTask): Task | null => {
         ? text((project as Record<string, unknown>).name)
         : text(body.projectName);
 
-  const rawDate = text(body.date) || text(body.dueDate) || text(body.due_date);
+  const rawDate =
+    text(body.date) ||
+    text(body.dueDate) ||
+    text(body.due_date) ||
+    text(body.dueAt) ||
+    text(body.deadline) ||
+    text(body.scheduledAt) ||
+    text(body.startDate);
   const rawTime = text(body.time) || text(body.dueTime) || text(body.due_time);
 
   const rawPriority = text(body.priority);

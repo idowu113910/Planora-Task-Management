@@ -4,6 +4,8 @@
 html {
   background-color: #f1f4f8; /* fills overscroll/bounce areas and notch zones */
   min-height: 100%;
+  color-scheme: light; /* stops phones from forcing dark mode */
+  overscroll-behavior-y: none; /* no bounce that reveals another colour */
 }
 
 body {
@@ -11,7 +13,7 @@ body {
   padding: 0;
   width: 100%;
   min-height: 100vh; /* fallback for older browsers */
-  min-height: 100dvh; /* modern Safari: tracks the toolbar */
+  min-height: 100dvh; /* modern browsers: tracks the toolbar */
   background-color: #f1f4f8;
   font-family: "Geist", sans-serif;
 }
@@ -21,10 +23,5 @@ body {
   min-height: 100vh; /* fallback */
   min-height: 100dvh;
   background-color: #f1f4f8;
-
-  /* keep content clear of the notch / home bar (edge-to-edge) */
-  padding-top: env(safe-area-inset-top);
-  padding-right: env(safe-area-inset-right);
-  padding-bottom: env(safe-area-inset-bottom);
-  padding-left: env(safe-area-inset-left);
+  /* No safe-area padding here: each page handles its own, so it isn't added twice */
 }

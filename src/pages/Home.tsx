@@ -186,6 +186,13 @@ const to12h = (time: string) => {
   return `${pad2(h % 12 || 12)}:${pad2(m)} ${h >= 12 ? "PM" : "AM"}`;
 };
 
+// The day part (YYYY-MM-DD) of a task's date, or "" if it has none that can be
+// read. A full timestamp such as 2026-11-25T00:00:00.000Z is cut down to its day.
+const dayOf = (date?: string): string => {
+  const day = (date ?? "").trim().slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : "";
+};
+
 // What shows on the right of a task: the time, as in the design. Tasks for
 // another day also say which day; tasks with no time say "Today".
 const getWhenLabel = (task: Task) => {
@@ -196,23 +203,29 @@ const getWhenLabel = (task: Task) => {
   );
 
   const parts: string[] = [];
-  if (task.date === tomorrowISO) parts.push("Tomorrow");
-  else if (task.date !== todayISO) {
-    parts.push(
-      new Date(`${task.date}T00:00`).toLocaleDateString(undefined, {
-        day: "numeric",
-        month: "short",
-      }),
-    );
+  const day = dayOf(task.date);
+  if (day === tomorrowISO) parts.push("Tomorrow");
+  else if (day && day !== todayISO) {
+    const parsed = new Date(`${day}T00:00`);
+    // A date that can't be read is left out, never shown as "Invalid Date"
+    if (!Number.isNaN(parsed.getTime())) {
+      parts.push(
+        parsed.toLocaleDateString(undefined, {
+          day: "numeric",
+          month: "short",
+        }),
+      );
+    }
   }
-  if (task.time) parts.push(to12h(task.time));
+  const time = /^\d{1,2}:\d{2}/.test(task.time ?? "") ? task.time : "";
+  if (time) parts.push(to12h(time));
   return parts.length > 0 ? parts.join(" · ") : "Today";
 };
 
 // Soonest first: by day, then by time (tasks with no time go last), then by
 // the order they were added
 const byDueDate = (a: Task, b: Task) =>
-  a.date.localeCompare(b.date) ||
+  dayOf(a.date).localeCompare(dayOf(b.date)) ||
   (a.time || "99:99").localeCompare(b.time || "99:99") ||
   a.createdAt - b.createdAt;
 
@@ -922,7 +935,7 @@ const Home = ({ name, completedTasks, totalTasks }: Props) => {
   // Only tasks whose date is today go in Today's Tasks, earliest time first
   const todayISO = localISO(new Date());
   const todayTasks = openTasks
-    .filter((task) => task.date === todayISO)
+    .filter((task) => (dayOf(task.date) || todayISO) === todayISO)
     .sort(byDueDate);
 
   // Finished tasks, the one finished last on top
