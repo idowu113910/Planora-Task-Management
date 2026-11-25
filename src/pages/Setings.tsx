@@ -38,6 +38,60 @@ type Screen =
   | "privacy"
   | "about";
 
+/* ========================================================================== */
+/*                     STAYING ON THE SAME SCREEN ON REFRESH                  */
+/* ========================================================================== */
+// The screen that is open is remembered for this browser tab, so refreshing the
+// page brings back the same screen. Leaving the Settings page (for example with
+// the bottom navigation) forgets it, so coming back starts on the main list.
+
+const SCREEN_KEY = "settingsScreen";
+
+const ALL_SCREENS: Screen[] = [
+  "settings",
+  "profile",
+  "notifications",
+  "theme",
+  "security",
+  "password",
+  "reset",
+  "help",
+  "sync",
+  "privacy",
+  "about",
+];
+
+const loadScreen = (): Screen => {
+  try {
+    const saved = sessionStorage.getItem(SCREEN_KEY);
+    // The reset screen emails a new code every time it opens, so a refresh
+    // there goes back one step instead of sending another email
+    if (saved === "reset") return "password";
+    if (saved && (ALL_SCREENS as string[]).includes(saved)) {
+      return saved as Screen;
+    }
+  } catch {
+    // storage unavailable: start on the main list
+  }
+  return "settings";
+};
+
+const saveScreen = (screen: Screen) => {
+  try {
+    sessionStorage.setItem(SCREEN_KEY, screen);
+  } catch {
+    // storage unavailable: a refresh just starts on the main list
+  }
+};
+
+const forgetScreen = () => {
+  try {
+    sessionStorage.removeItem(SCREEN_KEY);
+  } catch {
+    // nothing to forget
+  }
+};
+
 // "opens" is optional: rows with it switch the Settings page to that screen
 type Item = {
   title: string;
@@ -2630,7 +2684,7 @@ const EditProfileModal = ({
 };
 
 const Setings = () => {
-  const [screen, setScreen] = useState<Screen>("settings");
+  const [screen, setScreen] = useState<Screen>(loadScreen);
   // Starts from what was saved before, so changes survive a refresh
   const [profileData, setProfileData] = useState<ProfileData>(loadProfile);
   const [isEditing, setIsEditing] = useState(false);
@@ -2638,6 +2692,14 @@ const Setings = () => {
   const navigate = useNavigate();
 
   const closeEdit = useCallback(() => setIsEditing(false), []);
+
+  // Remember which screen is open, so a refresh stays on it
+  useEffect(() => {
+    saveScreen(screen);
+  }, [screen]);
+
+  // Forget it when leaving the Settings page, so coming back starts fresh
+  useEffect(() => forgetScreen, []);
 
   // Gets the account's details from the backend (GET /profile), so the Profile
   // screen is right after signing in again or clearing the browser. If that

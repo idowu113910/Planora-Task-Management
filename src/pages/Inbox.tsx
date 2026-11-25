@@ -17,6 +17,35 @@ const tabs = ["All", "Today", "Upcoming", "Priority", "Completed"] as const;
 type Tab = (typeof tabs)[number];
 
 /* ========================================================================== */
+/*                         REMEMBER THE TAB ON REFRESH                        */
+/* ========================================================================== */
+// The tab you are on is saved in this browser, so refreshing the page keeps
+// you on the same tab instead of jumping back to "All".
+
+const TAB_KEY = "inboxActiveTab";
+
+// Reads the last tab from storage; falls back to "All" if missing or invalid
+const loadTab = (): Tab => {
+  try {
+    const saved = localStorage.getItem(TAB_KEY);
+    if (saved && (tabs as readonly string[]).includes(saved)) {
+      return saved as Tab;
+    }
+  } catch {
+    // storage unavailable: use the default
+  }
+  return "All";
+};
+
+const saveTab = (tab: Tab) => {
+  try {
+    localStorage.setItem(TAB_KEY, tab);
+  } catch {
+    // storage full or blocked: the tab just won't survive a refresh
+  }
+};
+
+/* ========================================================================== */
 /*                               DATE HELPERS                                 */
 /* ========================================================================== */
 
@@ -454,7 +483,8 @@ const CompletedItem = ({ task }: { task: Task }) => (
 /* ========================================================================== */
 
 const Inbox = () => {
-  const [activeTab, setActiveTab] = useState<Tab>("All");
+  // Starts on the tab you were last on (saved below), or "All" the first time
+  const [activeTab, setActiveTab] = useState<Tab>(loadTab);
   const storeTasks = useTasks();
 
   // Load this person's tasks from the backend when the page opens
@@ -473,6 +503,9 @@ const Inbox = () => {
 
   // Remember edits and deletions (Home reads the same record)
   useEffect(() => saveStatus(status), [status]);
+
+  // Remember the current tab so a refresh keeps you on it
+  useEffect(() => saveTab(activeTab), [activeTab]);
 
   const saveEdit = (task: Task, updated: NewTask) => {
     updateTaskRemote(String(task.id), updated);

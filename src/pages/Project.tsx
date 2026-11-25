@@ -40,6 +40,30 @@ const COLOR_CHOICES = [
 
 const NAME_MAX = 30;
 
+// The project that is open is remembered for this browser tab, so refreshing
+// the page brings back the same project. Leaving the Projects page (for example
+// with the bottom navigation) forgets it, so coming back starts on the list.
+const SELECTED_KEY = "projectSelected";
+
+const loadSelected = (): string | null => {
+  try {
+    return sessionStorage.getItem(SELECTED_KEY) || null;
+  } catch {
+    return null;
+  }
+};
+
+const saveSelected = (name: string | null) => {
+  try {
+    if (name) sessionStorage.setItem(SELECTED_KEY, name);
+    else sessionStorage.removeItem(SELECTED_KEY);
+  } catch {
+    // storage unavailable: a refresh just starts on the list
+  }
+};
+
+const forgetSelected = () => saveSelected(null);
+
 // Projects you create are kept in this browser for now. When you add a
 // backend, save and load them there instead.
 const PROJECTS_KEY = "planora-projects";
@@ -604,8 +628,17 @@ const Project = () => {
     refreshTasks();
   }, []);
   const [status] = useState<Status>(loadStatus);
+
   // The project that was tapped (its tasks are shown), or null for the list
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(loadSelected);
+
+  // Remember which project is open, so a refresh stays on it
+  useEffect(() => {
+    saveSelected(selected);
+  }, [selected]);
+
+  // Forget it when leaving the Projects page, so coming back starts fresh
+  useEffect(() => forgetSelected, []);
   // Projects you created, and whether the "Create Project" pop-up is open
   const [customProjects, setCustomProjects] =
     useState<ProjectDef[]>(loadCustomProjects);
