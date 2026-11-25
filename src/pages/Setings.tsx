@@ -23,6 +23,7 @@ import {
   FiRefreshCw,
 } from "react-icons/fi";
 import { authApi } from "../api/client";
+import { markSignedOut } from "../auth";
 
 type Screen =
   | "settings"
@@ -525,6 +526,160 @@ const changePassword = async (current: string, next: string): Promise<void> => {
 };
 
 /* ========================================================================== */
+/*                         PROFILE ENDPOINTS (BACKEND)                        */
+/* ========================================================================== */
+//   GET    /api/profile   the signed-in person's details
+//   PATCH  /api/profile   saves changes to them
+//   DELETE /api/profile   deletes the account
+
+const PROFILE_URL = `${AUTH_API.replace(/\/auth$/, "")}/profile`;
+
+// Sends a profile request with the person's token. If the token has run out
+// (401), the app's own client refreshes it once and the request is repeated.
+const profileRequest = async (
+  method: "GET" | "PATCH" | "DELETE",
+  body?: Record<string, unknown>,
+  retried = false,
+): Promise<unknown> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (body) headers["Content-Type"] = "application/json";
+  const token = readStored(TOKEN_KEY);
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  let response: Response;
+  try {
+    response = await fetch(PROFILE_URL, {
+      method,
+      headers,
+      ...(SEND_COOKIES ? { credentials: "include" as const } : {}),
+      ...(body ? { body: JSON.stringify(body) } : {}),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    throw new Error(
+      error instanceof DOMException && error.name === "AbortError"
+        ? "The server is taking too long to respond. Please try again."
+        : "Can't reach the server. Check your internet connection and try again.",
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (response.status === 401 && !retried) {
+    try {
+      await authApi.me(); // the app's client refreshes the login when needed
+    } catch {
+      // still signed out: the repeat below fails with the real reason
+    }
+    return profileRequest(method, body, true);
+  }
+
+  let data: unknown = null;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+
+  if (!response.ok) {
+    const message =
+      readServerMessage(data) ??
+      (response.status >= 500
+        ? "Something went wrong on our side. Please try again shortly."
+        : "We couldn't complete that. Please try again.");
+    throw new Error(
+      SHOW_ERROR_DETAILS ? `${message} (status ${response.status})` : message,
+    );
+  }
+  return data;
+};
+
+// Reads name, email and picture out of the server's answer. THE ONE PLACE to
+// match the field names if your backend spells them differently.
+const readProfile = (
+  data: unknown,
+): { name: string; email: string; photo: string } => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const body = (data ?? {}) as Record<string, any>;
+  const user =
+    body.user ??
+    body.profile ??
+    body.data?.profile ??
+    body.data?.user ??
+    body.data ??
+    body;
+  const text = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+
+  const first = text(user?.firstName) || text(user?.first_name);
+  const last = text(user?.lastName) || text(user?.last_name);
+  const name =
+    text(user?.fullName) ||
+    text(user?.displayName) ||
+    text(user?.name) ||
+    [first, last].filter(Boolean).join(" ");
+
+  const photo =
+    text(user?.photo) ||
+    text(user?.avatar) ||
+    text(user?.profilePicture) ||
+    text(user?.image) ||
+    text(user?.imageUrl);
+
+  return { name, email: text(user?.email), photo };
+};
+
+const fetchProfile = async () => readProfile(await profileRequest("GET"));
+
+// Saves the name (and the email, only if it was changed). The display name is
+// split into firstName and lastName, the way sign up stores them.
+const updateProfile = async (
+  next: { name: string; email: string },
+  previousEmail: string,
+): Promise<void> => {
+  const [firstName, ...rest] = next.name.trim().split(/\s+/);
+  const body: Record<string, unknown> = {
+    firstName,
+    lastName: rest.join(" "),
+  };
+  if (next.email.trim().toLowerCase() !== previousEmail.trim().toLowerCase()) {
+    body.email = next.email.trim();
+  }
+  await profileRequest("PATCH", body);
+};
+
+// Deletes the account on the server
+const deleteProfile = async (): Promise<void> => {
+  await profileRequest("DELETE");
+};
+
+// Forgets everything this browser kept about the account
+const clearLocalAccountData = () => {
+  try {
+    for (const key of [
+      TOKEN_KEY,
+      REFRESH_KEY,
+      PROFILE_KEY,
+      BACKUP_KEY,
+      ACCOUNT_EMAIL_KEY,
+      ACCOUNT_FIRST_NAME_KEY,
+      ACCOUNT_LAST_NAME_KEY,
+      ACCOUNT_FULL_NAME_KEY,
+      "planora-tasks",
+      "taskStatus",
+      "planora-projects",
+    ]) {
+      localStorage.removeItem(key);
+    }
+  } catch {
+    // storage blocked: nothing to clear
+  }
+  markSignedOut();
+};
+
+/* ========================================================================== */
 /*                               SIGNING OUT                                  */
 /* ========================================================================== */
 
@@ -916,12 +1071,33 @@ const SecurityScreen = ({
   onBack,
   onOpenPassword,
   onSignOutAll,
+  onDeleteAccount,
 }: {
   onBack: () => void;
   onOpenPassword: () => void;
   // Called when "Sign out all" is pressed. Resolves once signed out.
   onSignOutAll: () => Promise<void>;
+  // Called when deleting is confirmed. Resolves to "" once the account is
+  // deleted, or to the reason it wasn't.
+  onDeleteAccount: () => Promise<string>;
 }) => {
+  // The "are you sure?" pop-up for Delete Account
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
+
+  const handleConfirmDelete = async () => {
+    if (deleting) return;
+    setDeleting(true);
+    setDeleteError("");
+    const problem = await onDeleteAccount();
+    // On success the page leaves this screen, so only a failure needs handling
+    if (problem) {
+      setDeleteError(problem);
+      setDeleting(false);
+    }
+  };
+
   // true while signing out, so the button can't be pressed twice
   const [signingOut, setSigningOut] = useState(false);
 
@@ -1065,6 +1241,10 @@ const SecurityScreen = ({
 
             <button
               type="button"
+              onClick={() => {
+                setDeleteError("");
+                setConfirmingDelete(true);
+              }}
               className="min-h-9 shrink-0 whitespace-nowrap touch-manipulation rounded-lg bg-[#EF4444] px-4 text-[0.875rem] font-normal text-white"
             >
               Delete
@@ -1072,6 +1252,67 @@ const SecurityScreen = ({
           </li>
         </ul>
       </section>
+
+      {/* Asks first, and deletes only if "Delete" is pressed here */}
+      {confirmingDelete && (
+        <div
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !deleting)
+              setConfirmingDelete(false);
+          }}
+          className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/40 p-4"
+        >
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="delete-account-title"
+            aria-describedby="delete-account-text"
+            className="w-full max-w-sm rounded-3xl bg-white p-5 min-[360px]:p-6"
+          >
+            <h2
+              id="delete-account-title"
+              className="text-[1rem] font-medium text-[#111827]"
+            >
+              Delete Account
+            </h2>
+            <p
+              id="delete-account-text"
+              className="mt-2 text-[0.875rem] font-normal text-[#6B7280]"
+            >
+              This will permanently delete your account and all of your data.
+              Once deleted, this action cannot be undone.
+            </p>
+
+            {deleteError && (
+              <p
+                role="alert"
+                className="mt-3 text-[0.75rem] font-normal text-[#E74C3C]"
+              >
+                {deleteError}
+              </p>
+            )}
+
+            <div className="mt-6 flex flex-wrap justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setConfirmingDelete(false)}
+                disabled={deleting}
+                className="min-h-11 touch-manipulation rounded-xl border border-[#D8E5F3] bg-white px-4 text-[0.875rem] font-normal text-[#6B7280] disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDelete}
+                disabled={deleting}
+                className="min-h-11 touch-manipulation rounded-xl bg-[#EF4444] px-5 text-[0.875rem] font-normal text-white disabled:opacity-50"
+              >
+                {deleting ? "Deleting…" : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 };
@@ -2178,8 +2419,9 @@ const EditProfileModal = ({
   onClose,
 }: {
   data: ProfileData;
-  // Returns true when the changes were saved (the page then closes this pop-up)
-  onSave: (next: ProfileData) => boolean;
+  // Resolves to "" when the changes were saved (the page then closes this
+  // pop-up), or to the reason they weren't
+  onSave: (next: ProfileData) => Promise<string>;
   onClose: () => void;
 }) => {
   // Changes are kept here until "Save changes", so Cancel throws them away
@@ -2187,6 +2429,7 @@ const EditProfileModal = ({
   const [email, setEmail] = useState(data.email);
   const [photo, setPhoto] = useState(data.photo);
   const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
 
   const panelRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -2226,17 +2469,21 @@ const EditProfileModal = ({
     }
   };
 
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!canSave) return;
+    if (!canSave || saving) return;
 
-    // TODO: send the changes to your backend too, and close only after it succeeds
-    const saved = onSave({ name: name.trim(), email: email.trim(), photo });
-
-    if (!saved) {
-      setError(
-        "We couldn't save your changes. Free up some space or try a different picture, then try again.",
-      );
+    setSaving(true);
+    setError("");
+    const problem = await onSave({
+      name: name.trim(),
+      email: email.trim(),
+      photo,
+    });
+    // On success the page closes this pop-up, so only a failure needs handling
+    if (problem) {
+      setError(problem);
+      setSaving(false);
     }
   };
 
@@ -2370,10 +2617,10 @@ const EditProfileModal = ({
             </button>
             <button
               type="submit"
-              disabled={!canSave}
+              disabled={!canSave || saving}
               className="min-h-10 touch-manipulation rounded-xl bg-[#1A7431] px-4 text-[0.875rem] font-normal text-white disabled:cursor-not-allowed disabled:opacity-50"
             >
-              Save changes
+              {saving ? "Saving…" : "Save changes"}
             </button>
           </div>
         </form>
@@ -2392,54 +2639,53 @@ const Setings = () => {
 
   const closeEdit = useCallback(() => setIsEditing(false), []);
 
-  // Gets the account's real name and email from the backend (/auth/me), so the
-  // Profile screen is right even after signing in again or clearing the browser.
-  // Details the person saved themselves on the Edit screen are left alone.
+  // Gets the account's details from the backend (GET /profile), so the Profile
+  // screen is right after signing in again or clearing the browser. If that
+  // fails, /auth/me is used instead (and details the person saved on the Edit
+  // screen are left alone).
   useEffect(() => {
     let cancelled = false;
-    authApi
-      .me()
-      .then((res) => {
-        if (cancelled) return;
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const data = res.data as Record<string, any>;
-        const user = data?.user ?? data?.data?.user ?? data;
-        const first =
-          typeof user?.firstName === "string"
-            ? user.firstName
-            : typeof user?.first_name === "string"
-              ? user.first_name
-              : "";
-        const last =
-          typeof user?.lastName === "string"
-            ? user.lastName
-            : typeof user?.last_name === "string"
-              ? user.last_name
-              : "";
-        const full =
-          typeof user?.fullName === "string" && user.fullName.trim()
-            ? user.fullName.trim()
-            : typeof user?.name === "string" && user.name.trim()
-              ? user.name.trim()
-              : [first, last].filter(Boolean).join(" ");
-        const email = typeof user?.email === "string" ? user.email.trim() : "";
 
-        writeAccountValue(ACCOUNT_FULL_NAME_KEY, full);
-        writeAccountValue(ACCOUNT_FIRST_NAME_KEY, first);
-        writeAccountValue(ACCOUNT_LAST_NAME_KEY, last);
-        writeAccountValue(ACCOUNT_EMAIL_KEY, email);
-
-        if (!hasSavedProfile() && (full || email)) {
-          setProfileData((prev) => ({
-            ...prev,
-            name: full || prev.name,
-            email: email || prev.email,
-          }));
-        }
-      })
-      .catch(() => {
-        // keep what is already shown
+    const applyAccount = (name: string, email: string, photo: string) => {
+      const [first = "", ...rest] = name.split(/\s+/);
+      writeAccountValue(ACCOUNT_FULL_NAME_KEY, name);
+      writeAccountValue(ACCOUNT_FIRST_NAME_KEY, first);
+      writeAccountValue(ACCOUNT_LAST_NAME_KEY, rest.join(" "));
+      writeAccountValue(ACCOUNT_EMAIL_KEY, email);
+      setProfileData((prev) => {
+        const next = {
+          name: name || prev.name,
+          email: email || prev.email,
+          photo: photo || prev.photo,
+        };
+        // Keep the saved copy in step with the server's
+        if (hasSavedProfile()) storeProfile(next);
+        return next;
       });
+    };
+
+    (async () => {
+      try {
+        const p = await fetchProfile();
+        if (cancelled) return;
+        if (p.name || p.email) applyAccount(p.name, p.email, p.photo);
+        return;
+      } catch (error) {
+        console.warn("[profile] couldn't load /profile:", error);
+      }
+
+      try {
+        const res = await authApi.me();
+        if (cancelled) return;
+        const p = readProfile(res.data);
+        if (!hasSavedProfile() && (p.name || p.email)) {
+          applyAccount(p.name, p.email, "");
+        }
+      } catch {
+        // keep what is already shown
+      }
+    })();
+
     return () => {
       cancelled = true;
     };
@@ -2452,14 +2698,47 @@ const Setings = () => {
     return () => clearTimeout(timer);
   }, [toast]);
 
-  // Saves the changes, then closes the pop-up and confirms
-  const handleSave = (next: ProfileData): boolean => {
-    if (!storeProfile(next)) return false; // the pop-up shows the error
+  // Sends the changes to the backend, then closes the pop-up and confirms.
+  // Returns "" when saved, or the reason it wasn't (the pop-up shows it).
+  const handleSave = async (next: ProfileData): Promise<string> => {
+    try {
+      await updateProfile(next, profileData.email);
+    } catch (e) {
+      return e instanceof Error && e.message
+        ? e.message
+        : "We couldn't save your changes. Please try again.";
+    }
+
+    // The picture is kept in this browser only
+    if (!storeProfile(next)) {
+      return "Your changes were saved, but the picture couldn't be kept on this device. Try a different picture.";
+    }
+
+    const [first = "", ...rest] = next.name.split(/\s+/);
+    writeAccountValue(ACCOUNT_FULL_NAME_KEY, next.name);
+    writeAccountValue(ACCOUNT_FIRST_NAME_KEY, first);
+    writeAccountValue(ACCOUNT_LAST_NAME_KEY, rest.join(" "));
+    writeAccountValue(ACCOUNT_EMAIL_KEY, next.email);
 
     setProfileData(next);
     setIsEditing(false);
     setToast("Profile updated successfully");
-    return true;
+    return "";
+  };
+
+  // Deletes the account on the server, then leaves for the sign in page.
+  // Returns "" on success, or the reason it failed.
+  const handleDeleteAccount = async (): Promise<string> => {
+    try {
+      await deleteProfile();
+    } catch (e) {
+      return e instanceof Error && e.message
+        ? e.message
+        : "We couldn't delete your account. Please try again.";
+    }
+    clearLocalAccountData();
+    navigate(SIGN_IN_PATH, { replace: true });
+    return "";
   };
 
   // The Profile row shows the saved name and email
@@ -2496,6 +2775,7 @@ const Setings = () => {
             // replace: the Back button can't return to the signed-in pages
             navigate(SIGN_IN_PATH, { replace: true });
           }}
+          onDeleteAccount={handleDeleteAccount}
         />
       ) : screen === "password" ? (
         <PasswordScreen
