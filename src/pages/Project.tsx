@@ -1,11 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { MdOutlineKeyboardArrowRight } from "react-icons/md";
-import { FiCheck, FiChevronLeft, FiMoreHorizontal, FiX } from "react-icons/fi";
+import {
+  FiCheck,
+  FiChevronLeft,
+  FiEdit2,
+  FiMoreHorizontal,
+  FiTrash2,
+  FiX,
+} from "react-icons/fi";
 import { GoPlus } from "react-icons/go";
 import { useTasks, refreshTasks } from "../layout/taskStore";
 import type { Task } from "../layout/taskStore";
-
-type ProjectDef = { name: string; color: string };
+import {
+  createProject as createProjectOnServer,
+  getProjects,
+  getProject,
+  updateProject as updateProjectOnServer,
+  deleteProject as deleteProjectOnServer,
+} from "../api/projectApi";
+import type { ProjectDef } from "../api/projectApi";
+import { taskErrorMessage } from "../api/taskApi";
 
 // The projects every account starts with. The task numbers and the percentage
 // are worked out from the real tasks below, not typed in here.
@@ -45,6 +59,8 @@ const loadCustomProjects = (): ProjectDef[] => {
   }
 };
 
+// Keeps a copy of the projects in this browser, so the screen shows them
+// straight away and the Add Task sheet can list them
 const saveCustomProjects = (list: ProjectDef[]) => {
   try {
     localStorage.setItem(PROJECTS_KEY, JSON.stringify(list));
@@ -56,22 +72,30 @@ const saveCustomProjects = (list: ProjectDef[]) => {
 // The "Create Project" pop-up: a name and a colour
 const CreateProjectDialog = ({
   existingNames,
+  initial,
   onClose,
-  onCreate,
+  onSubmit,
 }: {
   existingNames: string[];
+  // Give it a project and the pop-up becomes "Edit Project", filled in with it
+  initial?: ProjectDef;
   onClose: () => void;
-  onCreate: (project: ProjectDef) => void;
+  // Resolves to "" when saved (the page then closes this pop-up), or to the
+  // reason it wasn't
+  onSubmit: (project: ProjectDef) => Promise<string>;
 }) => {
-  const [name, setName] = useState("");
-  const [color, setColor] = useState(COLOR_CHOICES[0].value);
+  const editing = initial !== undefined;
+  const [name, setName] = useState(initial?.name ?? "");
+  const [color, setColor] = useState(initial?.color ?? COLOR_CHOICES[0].value);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
   const trimmed = name.trim();
   const isDuplicate = existingNames.some(
     (n) => n.toLowerCase() === trimmed.toLowerCase(),
   );
-  const canCreate = trimmed.length > 0 && !isDuplicate;
+  const canCreate = trimmed.length > 0 && !isDuplicate && !saving;
 
   useEffect(() => {
     // Focus goes to the name box, and back to the button afterwards
@@ -94,9 +118,16 @@ const CreateProjectDialog = ({
     };
   }, [onClose]);
 
-  const submit = () => {
+  const submit = async () => {
     if (!canCreate) return;
-    onCreate({ name: trimmed, color });
+    setSaving(true);
+    setError("");
+    const problem = await onSubmit({ name: trimmed, color });
+    // On success the page closes this pop-up, so only a failure needs handling
+    if (problem) {
+      setError(problem);
+      setSaving(false);
+    }
   };
 
   return (
@@ -132,7 +163,7 @@ const CreateProjectDialog = ({
           id="create-project-title"
           className="mt-1 text-[14px] font-normal text-[#111827]"
         >
-          Create Project
+          {editing ? "Edit Project" : "Create Project"}
         </h2>
 
         <label
@@ -148,7 +179,10 @@ const CreateProjectDialog = ({
           type="text"
           value={name}
           maxLength={NAME_MAX}
-          onChange={(e) => setName(e.target.value)}
+          onChange={(e) => {
+            setName(e.target.value);
+            setError("");
+          }}
           placeholder="E.g Marketing"
           autoComplete="off"
           aria-invalid={isDuplicate}
@@ -193,17 +227,202 @@ const CreateProjectDialog = ({
           </div>
         </fieldset>
 
+        {error && (
+          <p
+            role="alert"
+            className="mt-4 text-[12px] font-normal break-words text-[#EF4444]"
+          >
+            {error}
+          </p>
+        )}
+
         <div className="mt-5 flex justify-end">
           <button
             type="submit"
             disabled={!canCreate}
             className="flex h-11 touch-manipulation items-center justify-center gap-2 rounded-xl bg-[#1A7431] px-5 text-[14px] font-normal text-white disabled:cursor-not-allowed disabled:bg-[#A9D0B4]"
           >
-            <GoPlus aria-hidden="true" />
-            Create
+            {saving ? (
+              editing ? (
+                "Saving…"
+              ) : (
+                "Creating…"
+              )
+            ) : editing ? (
+              "Save"
+            ) : (
+              <>
+                <GoPlus aria-hidden="true" />
+                Create
+              </>
+            )}
           </button>
         </div>
       </form>
+    </div>
+  );
+};
+
+// The "Delete Project" pop-up: asks first, then deletes only if "Delete" is pressed
+const DeleteProjectDialog = ({
+  name,
+  onCancel,
+  onConfirm,
+}: {
+  name: string;
+  onCancel: () => void;
+  // Resolves to "" when deleted, or to the reason it wasn't
+  onConfirm: () => Promise<string>;
+}) => {
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState("");
+
+  const confirm = async () => {
+    if (deleting) return;
+    setDeleting(true);
+    setError("");
+    const problem = await onConfirm();
+    if (problem) {
+      setError(problem);
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <div
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !deleting) onCancel();
+      }}
+      className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/40 p-4"
+    >
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="delete-project-title"
+        aria-describedby="delete-project-text"
+        className="w-full max-w-sm rounded-3xl bg-white p-5 min-[360px]:p-6"
+      >
+        <h2
+          id="delete-project-title"
+          className="text-[1rem] font-medium text-[#111827]"
+        >
+          Delete Project
+        </h2>
+        <p
+          id="delete-project-text"
+          className="mt-2 text-[0.875rem] font-normal break-words text-[#6B7280]"
+        >
+          This will permanently delete “{name}”. Once deleted, this action
+          cannot be undone.
+        </p>
+
+        {error && (
+          <p
+            role="alert"
+            className="mt-3 text-[12px] font-normal break-words text-[#EF4444]"
+          >
+            {error}
+          </p>
+        )}
+
+        <div className="mt-6 flex flex-wrap justify-end gap-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={deleting}
+            className="min-h-11 touch-manipulation rounded-xl border border-[#D8E5F3] bg-white px-4 text-[0.875rem] font-normal text-[#6B7280] disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={confirm}
+            disabled={deleting}
+            className="min-h-11 touch-manipulation rounded-xl bg-[#EF4444] px-5 text-[0.875rem] font-normal text-white disabled:opacity-50"
+          >
+            {deleting ? "Deleting…" : "Delete"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// The "..." button on a project's own screen, with Edit and Delete
+const ProjectMenu = ({
+  onEdit,
+  onDelete,
+}: {
+  onEdit: () => void;
+  onDelete: () => void;
+}) => {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  // While open, tapping outside it, or pressing Escape, closes it
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  const itemClass =
+    "flex min-h-11 w-full touch-manipulation items-center gap-3 rounded-xl px-3 text-left text-[14px] font-normal";
+
+  return (
+    <div ref={wrapRef} className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-label="Project options"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        className="-mt-2 -mr-2 flex h-11 w-11 touch-manipulation items-center justify-center text-[#6B7280]"
+      >
+        <FiMoreHorizontal size={16} aria-hidden="true" />
+      </button>
+
+      {open && (
+        <div
+          role="menu"
+          className="absolute top-full right-0 z-20 mt-1 w-40 rounded-2xl bg-white p-1.5 shadow-[0_8px_24px_rgba(17,24,39,0.15)]"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onEdit();
+            }}
+            className={`${itemClass} text-[#1A7431]`}
+          >
+            <FiEdit2 size={16} aria-hidden="true" />
+            Edit
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onDelete();
+            }}
+            className={`${itemClass} text-[#F43F5E]`}
+          >
+            <FiTrash2 size={16} aria-hidden="true" />
+            Delete
+          </button>
+        </div>
+      )}
     </div>
   );
 };
@@ -392,19 +611,124 @@ const Project = () => {
     useState<ProjectDef[]>(loadCustomProjects);
   const [creating, setCreating] = useState(false);
   const closeCreate = useCallback(() => setCreating(false), []);
+  // The project being edited or deleted (its pop-up is open)
+  const [editingProject, setEditingProject] = useState<ProjectDef | null>(null);
+  const [deletingProject, setDeletingProject] = useState<ProjectDef | null>(
+    null,
+  );
+  const closeEdit = useCallback(() => setEditingProject(null), []);
+  const closeDelete = useCallback(() => setDeletingProject(null), []);
 
+  // Work, Personal and Freelance are built in; the rest come from the server
   const projects = [...DEFAULT_PROJECTS, ...customProjects];
 
-  const createProject = (project: ProjectDef) => {
-    const next = [...customProjects, project];
-    setCustomProjects(next);
-    saveCustomProjects(next);
-    setCreating(false);
+  // Replaces the list of created projects, and keeps a copy in this browser
+  const setCreated = (list: ProjectDef[]) => {
+    setCustomProjects(list);
+    saveCustomProjects(list);
+  };
+
+  // Load this person's projects from the backend when the page opens. If it
+  // fails, the copy kept in this browser stays on screen.
+  useEffect(() => {
+    let cancelled = false;
+    getProjects()
+      .then((list) => {
+        if (cancelled) return;
+        const builtIn = DEFAULT_PROJECTS.map((p) => p.name.toLowerCase());
+        const created = list.filter(
+          (p) => !builtIn.includes(p.name.toLowerCase()),
+        );
+        setCustomProjects(created);
+        saveCustomProjects(created);
+      })
+      .catch((error) => {
+        console.warn("[projects] couldn't load projects:", error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // CREATE: the "Create" button sends the project to the backend. Resolves to
+  // "" when saved, or to the reason it wasn't.
+  const createProject = async (project: ProjectDef): Promise<string> => {
+    try {
+      const saved = await createProjectOnServer(project);
+      setCreated([...customProjects, saved ?? project]);
+      setCreating(false);
+      return "";
+    } catch (error) {
+      return taskErrorMessage(error);
+    }
+  };
+
+  // UPDATE: saves a changed name or colour
+  const saveProject = async (changes: ProjectDef): Promise<string> => {
+    const target = editingProject;
+    if (!target) return "";
+    try {
+      if (target.id) {
+        const saved = await updateProjectOnServer(target.id, changes);
+        changes = { ...changes, ...(saved ?? {}), id: target.id };
+      }
+      setCreated(
+        customProjects.map((p) =>
+          p === target || (p.id && p.id === target.id)
+            ? { ...p, ...changes }
+            : p,
+        ),
+      );
+      // Tasks name their project, so the task list is reloaded
+      refreshTasks();
+      if (selected === target.name) setSelected(changes.name);
+      setEditingProject(null);
+      return "";
+    } catch (error) {
+      return taskErrorMessage(error);
+    }
+  };
+
+  // DELETE: removes the project on the backend, then leaves its screen
+  const removeProject = async (): Promise<string> => {
+    const target = deletingProject;
+    if (!target) return "";
+    try {
+      if (target.id) await deleteProjectOnServer(target.id);
+      setCreated(
+        customProjects.filter(
+          (p) => p !== target && !(p.id && p.id === target.id),
+        ),
+      );
+      refreshTasks();
+      setDeletingProject(null);
+      setSelected(null);
+      return "";
+    } catch (error) {
+      return taskErrorMessage(error);
+    }
   };
 
   const openProject = (name: string | null) => {
     setSelected(name);
     window.scrollTo({ top: 0 });
+
+    // READ ONE: refresh this project's details from the backend
+    const mine = customProjects.find((p) => p.name === name);
+    if (mine?.id) {
+      getProject(mine.id)
+        .then((fresh) => {
+          if (!fresh) return;
+          setCreated(
+            customProjects.map((p) =>
+              p.id === mine.id ? { ...p, ...fresh, id: mine.id } : p,
+            ),
+          );
+        })
+        .catch(() => {
+          // keep what is already shown
+        });
+    }
   };
 
   const todayISO = localISO(new Date());
@@ -469,9 +793,28 @@ const Project = () => {
               <FiChevronLeft size={14} aria-hidden="true" />
               Projects
             </button>
-            <h1 className="mt-1 text-[16px] font-medium text-[#111827]">
-              {current.name}
-            </h1>
+            <div className="mt-1 flex items-start justify-between gap-2">
+              <h1 className="min-w-0 text-[16px] font-medium break-words text-[#111827]">
+                {current.name}
+              </h1>
+              {/* Only projects you created can be edited or deleted */}
+              {customProjects.some((p) => p.name === current.name) && (
+                <ProjectMenu
+                  onEdit={() =>
+                    setEditingProject(
+                      customProjects.find((p) => p.name === current.name) ??
+                        null,
+                    )
+                  }
+                  onDelete={() =>
+                    setDeletingProject(
+                      customProjects.find((p) => p.name === current.name) ??
+                        null,
+                    )
+                  }
+                />
+              )}
+            </div>
             <p className="mt-2 text-[14px] font-normal text-[#6B7280]">
               {current.basic}
             </p>
@@ -535,6 +878,26 @@ const Project = () => {
             </p>
           )}
         </section>
+
+        {editingProject && (
+          <CreateProjectDialog
+            key={editingProject.id ?? editingProject.name}
+            initial={editingProject}
+            existingNames={projects
+              .map((p) => p.name)
+              .filter((n) => n !== editingProject.name)}
+            onClose={closeEdit}
+            onSubmit={saveProject}
+          />
+        )}
+
+        {deletingProject && (
+          <DeleteProjectDialog
+            name={deletingProject.name}
+            onCancel={closeDelete}
+            onConfirm={removeProject}
+          />
+        )}
       </div>
     );
   }
@@ -619,7 +982,7 @@ const Project = () => {
         <CreateProjectDialog
           existingNames={projects.map((p) => p.name)}
           onClose={closeCreate}
-          onCreate={createProject}
+          onSubmit={createProject}
         />
       )}
     </div>
