@@ -128,6 +128,23 @@ const buildDarkCss = (): string => {
     );
   }
 
+  // The layout that holds every page and the bottom bar has its own light
+  // background (with space at the bottom for the bar). It must be the page
+  // colour, or a lighter strip shows when you scroll to the bottom.
+  out.push(
+    `${D}${cls("bg-[#F1F4F8]")}${cls("pb-28")}{background-color:#0B0F14}`,
+    `${D}nav[aria-label="Main"]{background-color:#151B23}`,
+  );
+
+  // Round white things that must go dark too: the search and notification
+  // icons at the top of Home (the icon is light, so its circle can't stay
+  // white) and the empty tick circles beside tasks. The switch knob has no
+  // border and stays white.
+  out.push(
+    `${D}svg.bg-white{background-color:#1D252F}`,
+    `${D}.bg-white.rounded-full.border{background-color:#1D252F}`,
+  );
+
   out.push(`${D}.text-black{color:#F3F4F6}`);
 
   // Drawn shapes: the soft shapes behind the headers and the ring tracks

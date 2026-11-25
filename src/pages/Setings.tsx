@@ -24,7 +24,11 @@ import {
 } from "react-icons/fi";
 import { authApi } from "../api/client";
 import { markSignedOut } from "../auth";
-import { THEME_LABELS, setThemePreference, useThemePreference } from "../layout/Theme.";
+import {
+  THEME_LABELS,
+  setThemePreference,
+  useThemePreference,
+} from "../layout/Theme.";
 import type { ThemePreference } from "../layout/Theme.";
 
 type Screen =
@@ -2735,18 +2739,23 @@ const EditProfileModal = ({
               >
                 Email
               </label>
-              <input
-                id="edit-email"
-                name="email"
-                type="email"
-                inputMode="email"
-                autoComplete="email"
-                readOnly
-                aria-readonly="true"
-                value={email}
-                style={{ fontSize: "16px" }}
-                className={`${inputClass} cursor-not-allowed text-[#6B7280] opacity-70`}
-              />
+              {/* The email can't be changed: the field is switched off, so it
+                  can't be tapped, focused or typed in, and it looks faded */}
+              <div className="cursor-not-allowed select-none">
+                <input
+                  id="edit-email"
+                  name="email"
+                  type="email"
+                  autoComplete="email"
+                  disabled
+                  aria-disabled="true"
+                  tabIndex={-1}
+                  value={email}
+                  readOnly
+                  style={{ fontSize: "16px" }}
+                  className={`${inputClass} pointer-events-none text-[#6B7280] opacity-60`}
+                />
+              </div>
             </div>
           </div>
 
