@@ -39,7 +39,8 @@ const toServer = (task: Partial<TaskInput>) => {
   if (task.project !== undefined) body.project = task.project;
   if (task.date !== undefined) body.date = task.date;
   if (task.time !== undefined && task.time !== "") body.time = task.time;
-  if (task.priority !== undefined) body.priority = task.priority;
+  // The server only accepts low, medium or high (lowercase)
+  if (task.priority !== undefined) body.priority = task.priority.toLowerCase();
   return body;
 };
 

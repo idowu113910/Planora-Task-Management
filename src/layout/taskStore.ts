@@ -162,9 +162,15 @@ export const refreshTasks = (): Promise<void> => {
     try {
       const list = await getTasks();
       const mapped = list.map(fromServer).filter((t): t is Task => t !== null);
+      // Open the browser console (F12) to see what the server sent
+      console.log("[tasks] server sent", list.length, "task(s):", list);
+      if (mapped.length !== list.length) {
+        console.warn("[tasks] some tasks had no id and were skipped");
+      }
       setTasks(mapped);
-    } catch {
-      // keep what is already shown
+    } catch (error) {
+      // keep what is already shown, but say why in the console
+      console.error("[tasks] couldn't load tasks from the server:", error);
     } finally {
       loading = null;
     }

@@ -349,28 +349,28 @@ const fields: Field[] = [
   {
     id: "firstName",
     label: "First Name",
-    placeholder: "Enter First Name",
+    placeholder: "First Name",
     type: "text",
     autoComplete: "given-name",
   },
   {
     id: "lastName",
     label: "Last Name",
-    placeholder: "Enter Last Name",
+    placeholder: "Last Name",
     type: "text",
     autoComplete: "family-name",
   },
   {
     id: "email",
     label: "Email Address",
-    placeholder: "Enter Email Address",
+    placeholder: "Email Address",
     type: "email",
     autoComplete: "email",
   },
   {
     id: "password",
     label: "Password",
-    placeholder: "Enter Password",
+    placeholder: "Password",
     type: "password",
     autoComplete: "new-password",
   },
@@ -542,13 +542,13 @@ const SignUp = () => {
 
   return (
     <>
-      <div className="min-h-dvh w-full overflow-x-hidden bg-[#F1F4F8]">
-        <div className="relative mx-auto flex min-h-dvh w-full max-w-md flex-col overflow-x-hidden">
+      <div className="min-h-screen min-h-dvh w-full overflow-x-hidden bg-[#F1F4F8]">
+        <div className="relative mx-auto flex min-h-screen min-h-dvh w-full max-w-md flex-col overflow-x-hidden">
           <svg
             aria-hidden="true"
             viewBox="0 0 375 240"
             preserveAspectRatio="xMidYMin slice"
-            className="pointer-events-none absolute inset-x-0 top-0 h-auto w-full"
+            className="pointer-events-none absolute inset-0 h-full w-full"
           >
             <path
               d="M73.6054 -183.584L-89.0054 184.199L176.351 236.263L533.155 -112.813L73.6054 -183.584Z"
