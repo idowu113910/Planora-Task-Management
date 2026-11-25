@@ -4,7 +4,7 @@
 html {
   background-color: #f1f4f8; /* fills overscroll/bounce areas and notch zones */
   min-height: 100%;
-  color-scheme: light; /* stops phones from forcing dark mode */
+  color-scheme: light dark; /* follows the device's light or dark mode */
   overscroll-behavior-y: none; /* no bounce that reveals another colour */
 }
 

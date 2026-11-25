@@ -109,11 +109,23 @@ const readWhen = (): Record<string, When> => {
   }
 };
 
-const rememberWhen = (id: string, date: string, time: string) => {
+// Also remembered by title and project, for a task the server gave a different
+// id than the one the app saved it under
+const sigOf = (title: string, project: string) =>
+  `sig:${title.trim().toLowerCase()}|${project.trim().toLowerCase()}`;
+
+const rememberWhen = (
+  id: string,
+  date: string,
+  time: string,
+  title = "",
+  project = "",
+) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
   try {
     const all = readWhen();
     all[id] = { date, time };
+    if (title) all[sigOf(title, project)] = { date, time };
     localStorage.setItem(WHEN_KEY, JSON.stringify(all));
   } catch {
     // storage unavailable: the server's own date is used
@@ -162,16 +174,19 @@ export const fromServer = (raw: ServerTask): Task | null => {
   const created = Date.parse(text(body.createdAt));
 
   const id = String(rawId);
-  const remembered = readWhen()[id];
+  const title = text(body.title) || text(body.name);
+  const all = readWhen();
+  const remembered = all[id] ?? all[sigOf(title, projectName || "Work")];
   const serverDate = rawDate.slice(0, 10);
   // The server's date when it has a readable one, otherwise the one chosen here
   const date = isDay(serverDate) ? serverDate : (remembered?.date ?? "");
   const time = rawTime ? rawTime.slice(0, 5) : (remembered?.time ?? "");
-  if (isDay(serverDate)) rememberWhen(id, serverDate, time);
+  if (isDay(serverDate))
+    rememberWhen(id, serverDate, time, title, projectName || "Work");
 
   return {
     id,
-    title: text(body.title) || text(body.name),
+    title,
     project: projectName || "Work",
     date,
     time,
@@ -193,7 +208,7 @@ export const addTask = (input: NewTaskInput, id?: string): Task => {
     done: false,
     createdAt: Date.now(),
   };
-  rememberWhen(task.id, task.date, task.time ?? "");
+  rememberWhen(task.id, task.date, task.time ?? "", task.title, task.project);
   setTasks([...tasks, task]);
   return task;
 };
@@ -227,7 +242,13 @@ export const refreshTasks = (): Promise<void> => {
 export const updateTaskRemote = async (id: string, changes: NewTaskInput) => {
   try {
     await updateTask(id, changes);
-    rememberWhen(id, changes.date, changes.time ?? "");
+    rememberWhen(
+      id,
+      changes.date,
+      changes.time ?? "",
+      changes.title,
+      changes.project,
+    );
     setTasks(tasks.map((t) => (t.id === id ? { ...t, ...changes } : t)));
   } catch (error) {
     showToast("Couldn't update task", taskErrorMessage(error));

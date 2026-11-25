@@ -74,13 +74,19 @@ export const taskErrorMessage = (error: unknown): string => {
   return "Couldn't save the task. Please try again.";
 };
 
-const unwrap = (data: unknown): ServerTask => {
-  if (data && typeof data === "object") {
+// Finds the task inside the server's answer, however deeply it is wrapped
+// (for example { data: { task: {...} } })
+const unwrap = (data: unknown, depth = 0): ServerTask => {
+  if (data && typeof data === "object" && !Array.isArray(data)) {
     const body = data as Record<string, unknown>;
-    for (const key of ["task", "data"]) {
-      const inner = body[key];
-      if (inner && typeof inner === "object" && !Array.isArray(inner)) {
-        return inner as ServerTask;
+    if (body.id !== undefined || body._id !== undefined)
+      return body as ServerTask;
+    if (depth < 3) {
+      for (const key of ["task", "data", "result"]) {
+        const inner = body[key];
+        if (inner && typeof inner === "object" && !Array.isArray(inner)) {
+          return unwrap(inner, depth + 1);
+        }
       }
     }
     return body as ServerTask;

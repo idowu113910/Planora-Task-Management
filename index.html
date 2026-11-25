@@ -8,11 +8,20 @@
       content="width=device-width, initial-scale=1, viewport-fit=cover"
     />
 
-    <!-- Stops phones from forcing dark mode on the app -->
-    <meta name="color-scheme" content="light" />
+    <!-- Lets the app follow the device's light or dark mode -->
+    <meta name="color-scheme" content="light dark" />
 
     <!-- PWA: colours and app identity -->
-    <meta name="theme-color" content="#1A7431" />
+    <meta
+      name="theme-color"
+      content="#1A7431"
+      media="(prefers-color-scheme: light)"
+    />
+    <meta
+      name="theme-color"
+      content="#0B1014"
+      media="(prefers-color-scheme: dark)"
+    />
     <meta
       name="description"
       content="Plan your tasks and stay on top of your day."
