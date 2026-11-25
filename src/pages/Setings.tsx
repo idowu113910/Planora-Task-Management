@@ -192,7 +192,71 @@ const initialProfile: ProfileData = {
   email: "adaeze32@gmail.com",
   photo: avatar,
 };
-const MEMBER_SINCE = "Jan 2026";
+
+/* ========================================================================== */
+/*                       MEMBER SINCE (WHEN THE ACCOUNT WAS MADE)             */
+/* ========================================================================== */
+// The date comes from the server (the day the account was created) and is kept
+// in this browser so it still shows if the server can't be reached. Until it is
+// known, a dash is shown instead of a made-up date.
+
+const ACCOUNT_CREATED_KEY = "planora_created_at";
+
+// Turns a date from the server (ISO text, or a number in seconds or
+// milliseconds) into milliseconds. Returns null if it isn't a real date.
+const toTimestamp = (value: unknown): number | null => {
+  let ms: number;
+  if (typeof value === "number") {
+    ms = value < 1e11 ? value * 1000 : value; // seconds or milliseconds
+  } else if (typeof value === "string" && value.trim()) {
+    const text = value.trim();
+    if (/^\d+$/.test(text)) {
+      const n = Number(text);
+      ms = n < 1e11 ? n * 1000 : n;
+    } else {
+      ms = Date.parse(text);
+    }
+  } else {
+    return null;
+  }
+  // Must be a real date, after the year 2000 and not in the future
+  return Number.isFinite(ms) && ms > 946684800000 && ms <= Date.now() + 86400000
+    ? ms
+    : null;
+};
+
+// A MongoDB id starts with the moment it was created. Used only as a backup
+// when the server doesn't send a created date.
+const timestampFromId = (id: unknown): number | null => {
+  if (typeof id !== "string" || !/^[0-9a-f]{24}$/i.test(id)) return null;
+  return toTimestamp(parseInt(id.slice(0, 8), 16) * 1000);
+};
+
+const readCreatedAt = (): number | null => {
+  try {
+    return toTimestamp(localStorage.getItem(ACCOUNT_CREATED_KEY));
+  } catch {
+    return null;
+  }
+};
+
+const writeCreatedAt = (ms: number | null) => {
+  try {
+    if (ms) localStorage.setItem(ACCOUNT_CREATED_KEY, String(ms));
+    else localStorage.removeItem(ACCOUNT_CREATED_KEY);
+  } catch {
+    // storage unavailable: it is simply not remembered
+  }
+};
+
+// "Jan 2026"
+const formatMemberSince = (ms: number | null): string =>
+  ms
+    ? new Date(ms).toLocaleDateString("en-US", {
+        month: "short",
+        year: "numeric",
+      })
+    : "—";
 
 /* ========================================================================== */
 /*                            SAVING THE PROFILE                              */
@@ -651,11 +715,17 @@ const profileRequest = async (
   return data;
 };
 
-// Reads name, email and picture out of the server's answer. THE ONE PLACE to
-// match the field names if your backend spells them differently.
+// Reads name, email, picture and the date the account was created out of the
+// server's answer. THE ONE PLACE to match the field names if your backend
+// spells them differently.
 const readProfile = (
   data: unknown,
-): { name: string; email: string; photo: string } => {
+): {
+  name: string;
+  email: string;
+  photo: string;
+  createdAt: number | null;
+} => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const body = (data ?? {}) as Record<string, any>;
   const user =
@@ -682,7 +752,25 @@ const readProfile = (
     text(user?.image) ||
     text(user?.imageUrl);
 
-  return { name, email: text(user?.email), photo };
+  // The day the account was created. Tries the usual field names first, then
+  // the moment hidden inside a MongoDB id as a backup.
+  let createdAt: number | null = null;
+  for (const key of [
+    "createdAt",
+    "created_at",
+    "createdOn",
+    "dateCreated",
+    "memberSince",
+    "joinedAt",
+    "dateJoined",
+    "registeredAt",
+  ]) {
+    createdAt = toTimestamp(user?.[key]);
+    if (createdAt) break;
+  }
+  if (!createdAt) createdAt = timestampFromId(user?._id ?? user?.id);
+
+  return { name, email: text(user?.email), photo, createdAt };
 };
 
 const fetchProfile = async () => readProfile(await profileRequest("GET"));
@@ -721,6 +809,7 @@ const clearLocalAccountData = () => {
       ACCOUNT_FIRST_NAME_KEY,
       ACCOUNT_LAST_NAME_KEY,
       ACCOUNT_FULL_NAME_KEY,
+      ACCOUNT_CREATED_KEY,
       "planora-tasks",
       "taskStatus",
       "planora-projects",
@@ -854,17 +943,20 @@ const SettingsGroup = ({
 // The Profile screen, shown inside the Settings page
 const ProfileScreen = ({
   data,
+  memberSince,
   onBack,
   onEdit,
 }: {
   data: ProfileData;
+  // Already formatted, e.g. "Jan 2026"
+  memberSince: string;
   onBack: () => void;
   onEdit: () => void;
 }) => {
   const accountDetails = [
     { label: "Display Name", value: data.name },
     { label: "Email", value: data.email },
-    { label: "Member Since", value: MEMBER_SINCE },
+    { label: "Member Since", value: memberSince },
   ];
 
   return (
@@ -2687,6 +2779,8 @@ const Setings = () => {
   const [screen, setScreen] = useState<Screen>(loadScreen);
   // Starts from what was saved before, so changes survive a refresh
   const [profileData, setProfileData] = useState<ProfileData>(loadProfile);
+  // When the account was created (milliseconds), or null if not known yet
+  const [createdAt, setCreatedAt] = useState<number | null>(readCreatedAt);
   const [isEditing, setIsEditing] = useState(false);
   const [toast, setToast] = useState("");
   const navigate = useNavigate();
@@ -2704,7 +2798,8 @@ const Setings = () => {
   // Gets the account's details from the backend (GET /profile), so the Profile
   // screen is right after signing in again or clearing the browser. If that
   // fails, /auth/me is used instead (and details the person saved on the Edit
-  // screen are left alone).
+  // screen are left alone). The date the account was created is taken from
+  // whichever answer has it.
   useEffect(() => {
     let cancelled = false;
 
@@ -2727,24 +2822,48 @@ const Setings = () => {
     };
 
     (async () => {
+      let loaded = false; // the name and email came from /profile
+      let serverAnswered = false; // the server answered at least once
+      let created: number | null = null;
+
       try {
         const p = await fetchProfile();
         if (cancelled) return;
-        if (p.name || p.email) applyAccount(p.name, p.email, p.photo);
-        return;
+        serverAnswered = true;
+        created = p.createdAt;
+        if (p.name || p.email) {
+          applyAccount(p.name, p.email, p.photo);
+          loaded = true;
+        }
       } catch (error) {
         console.warn("[profile] couldn't load /profile:", error);
       }
 
-      try {
-        const res = await authApi.me();
-        if (cancelled) return;
-        const p = readProfile(res.data);
-        if (!hasSavedProfile() && (p.name || p.email)) {
-          applyAccount(p.name, p.email, "");
+      // Ask /auth/me too if /profile didn't give the details or the date
+      if (!loaded || !created) {
+        try {
+          const res = await authApi.me();
+          if (cancelled) return;
+          serverAnswered = true;
+          const p = readProfile(res.data);
+          if (!loaded && !hasSavedProfile() && (p.name || p.email)) {
+            applyAccount(p.name, p.email, "");
+          }
+          created = created ?? p.createdAt;
+        } catch {
+          // keep what is already shown
         }
-      } catch {
-        // keep what is already shown
+      }
+
+      if (cancelled) return;
+      if (created) {
+        writeCreatedAt(created);
+        setCreatedAt(created);
+      } else if (serverAnswered) {
+        // The server doesn't know the date, so don't keep one that might
+        // belong to a different account
+        writeCreatedAt(null);
+        setCreatedAt(null);
       }
     })();
 
@@ -2826,6 +2945,7 @@ const Setings = () => {
       {screen === "profile" ? (
         <ProfileScreen
           data={profileData}
+          memberSince={formatMemberSince(createdAt)}
           onBack={() => setScreen("settings")}
           onEdit={() => setIsEditing(true)}
         />
