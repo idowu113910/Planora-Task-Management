@@ -22,7 +22,16 @@ import { showToast } from "../layout/Toast";
 import type { NewTask } from "../layout/AddTaskModal";
 import api, { authApi } from "../api/client";
 import InstallBanner from "../layout/InstallBanner";
-import { ProfilePhoto, findPhoto, isPhoto } from "../layout/profilePhoto";
+import {
+  PhotoDebugBox,
+  ProfilePhoto,
+  checkPhotoLink,
+  describeError,
+  describeProfileAnswer,
+  findPhoto,
+  isPhoto,
+  isPhotoDebug,
+} from "../layout/profilePhoto";
 
 type Props = {
   // Optional override for the user's name shown in the greeting
@@ -109,14 +118,15 @@ const photoSignature = (photo: string) => `${photo.length}:${photo.slice(-40)}`;
 
 // A picture added on one device is, until now, only kept on that device. This
 // sends it to the server (once), so the person's other devices can show it too.
-// Returns the picture's link as the server now has it ("" if it sent none back).
+// Says whether it was skipped (already sent before) and the picture's link as
+// the server now has it ("" if it sent none back).
 const uploadLocalPhoto = async (
   photo: string,
   name: string,
-): Promise<string> => {
+): Promise<{ skipped: boolean; link: string }> => {
   try {
     if (localStorage.getItem(PHOTO_UPLOAD_KEY) === photoSignature(photo)) {
-      return "";
+      return { skipped: true, link: "" };
     }
   } catch {
     // storage unavailable: it may be sent again next time
@@ -136,7 +146,7 @@ const uploadLocalPhoto = async (
     } catch {
       // storage unavailable
     }
-    return findPhoto(res.data);
+    return { skipped: false, link: findPhoto(res.data) };
   } catch (error) {
     // If the server said no (a 4xx answer), trying again won't help. Anything
     // else, such as no connection, is tried again next time.
@@ -666,6 +676,10 @@ const Home = ({ name, completedTasks, totalTasks }: Props) => {
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
+  // "?photodebug=1" on the address shows a box that explains why the picture
+  // does or doesn't appear (see profilePhoto.tsx)
+  const [debugLines, setDebugLines] = useState<string[] | null>(null);
+
   // Gets the picture saved on the server, so it shows on every device the
   // person signs in on. If the server has none but this device does (it was
   // added here, when the account was set up), it is sent to the server so the
@@ -673,6 +687,11 @@ const Home = ({ name, completedTasks, totalTasks }: Props) => {
   useEffect(() => {
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const debug = isPhotoDebug();
+    const lines: string[] = [];
+    const show = () => {
+      if (debug && !cancelled) setDebugLines([...lines]);
+    };
 
     const load = (isRetry: boolean) => {
       api
@@ -685,26 +704,68 @@ const Home = ({ name, completedTasks, totalTasks }: Props) => {
             "[profile] picture from the server:",
             serverPhoto || "none",
           );
+
+          if (debug) {
+            lines.push(
+              `GET /profile worked (status ${res.status}).`,
+              ...describeProfileAnswer(res.data),
+              `Picture link the app picked: ${serverPhoto ? "yes" : "none"}`,
+            );
+            show();
+            if (serverPhoto) {
+              lines.push(
+                `Check of the link: ${await checkPhotoLink(serverPhoto)}`,
+              );
+              show();
+            }
+          }
+
           writePhotoCache(serverPhoto);
 
           const localPhoto = readLocalPhoto();
           setProfilePhoto(serverPhoto || localPhoto);
+          if (debug) {
+            lines.push(
+              `This device has its own saved picture: ${localPhoto ? "yes" : "no"}`,
+            );
+            show();
+          }
 
           if (!serverPhoto && localPhoto.startsWith("data:image/")) {
             try {
-              const uploaded = await uploadLocalPhoto(
+              const result = await uploadLocalPhoto(
                 localPhoto,
                 readStored(FULL_NAME_KEY),
               );
-              if (cancelled || !uploaded) return;
-              writePhotoCache(uploaded);
+              if (debug) {
+                lines.push(
+                  result.skipped
+                    ? "Sending this device's picture to the server: skipped, it was sent before."
+                    : result.link
+                      ? `Sending this device's picture to the server: done. The server now has ${result.link}`
+                      : "Sending this device's picture to the server: the server accepted it but sent no link back.",
+                );
+                show();
+              }
+              if (cancelled || !result.link) return;
+              writePhotoCache(result.link);
             } catch (error) {
               console.warn("[profile] couldn't send the picture:", error);
+              if (debug) {
+                lines.push(
+                  `Sending this device's picture to the server FAILED: ${describeError(error)}`,
+                );
+                show();
+              }
             }
           }
         })
         .catch((error) => {
           console.warn("[profile] couldn't load /profile:", error);
+          if (debug) {
+            lines.push(`GET /profile FAILED: ${describeError(error)}`);
+            show();
+          }
           // The server may still be waking up: try once more shortly
           if (!isRetry && !cancelled) {
             retryTimer = setTimeout(() => load(true), 5000);
@@ -1095,6 +1156,11 @@ const Home = ({ name, completedTasks, totalTasks }: Props) => {
           </>
         )}
       </div>
+
+      {/* Only with ?photodebug=1 on the address: explains the picture */}
+      {debugLines && (
+        <PhotoDebugBox lines={debugLines} onClose={() => setDebugLines(null)} />
+      )}
 
       {/* The "are you sure?" pop-up. Only "Delete" really deletes. */}
       {deletingTask && (

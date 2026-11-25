@@ -57,6 +57,17 @@ const URL_KEYS = [
   "imageUrl",
 ];
 
+// A server behind a proxy (like Render) often builds picture links that start
+// with "http://" even though the site is on "https://". Browsers block those
+// on a secure page, so they are switched to "https://".
+const upgradeToHttps = (url: string): string =>
+  typeof window !== "undefined" &&
+  window.location.protocol === "https:" &&
+  /^http:\/\//i.test(url) &&
+  !/^http:\/\/(localhost|127\.|192\.168\.)/i.test(url)
+    ? url.replace(/^http:/i, "https:")
+    : url;
+
 // Turns whatever the server sends for the picture into a full link:
 //   "https://..."                 used as it is
 //   "/uploads/me.jpg"             the server's address is put in front
@@ -68,7 +79,7 @@ export const toPhotoUrl = (value: unknown, depth = 0): string => {
     const text = value.trim().replace(/\\/g, "/");
     if (!text) return "";
     if (/^data:image\//i.test(text)) return text;
-    if (/^https?:\/\//i.test(text)) return text;
+    if (/^https?:\/\//i.test(text)) return upgradeToHttps(text);
     if (text.startsWith("//")) return `https:${text}`;
     if (text.startsWith("/")) return `${API_ORIGIN}${text}`;
     // A path such as "uploads/me.jpg". A plain word like "default" is not one.
@@ -192,3 +203,129 @@ export const ProfilePhoto = ({
 
   return <img {...rest} src={shown} alt={alt} onError={handleError} />;
 };
+
+/* ========================================================================== */
+/*                       "WHY IS MY PICTURE MISSING?" BOX                     */
+/* ========================================================================== */
+// Open the Home page with ?photodebug=1 on the end of the address (for example
+// /home?photodebug=1) and a box explains what the server sent for the picture
+// and whether it can be loaded. Nothing shows without it.
+
+export const isPhotoDebug = (): boolean => {
+  try {
+    return new URLSearchParams(window.location.search).has("photodebug");
+  } catch {
+    return false;
+  }
+};
+
+// A readable reason from a failed request
+export const describeError = (error: unknown): string => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const e = error as any;
+  const status = e?.response?.status;
+  const message = e?.response?.data?.message ?? e?.message ?? String(error);
+  return status ? `${message} (status ${status})` : String(message);
+};
+
+const shorten = (value: unknown): string => {
+  const text =
+    typeof value === "string"
+      ? value
+      : (JSON.stringify(value) ?? String(value));
+  if (text.startsWith("data:image/")) {
+    return `a picture stored inside the answer (${text.length} characters)`;
+  }
+  return text.length > 140 ? `${text.slice(0, 140)}…` : text;
+};
+
+// Lists what the server's answer holds about the picture
+export const describeProfileAnswer = (data: unknown): string[] => {
+  if (!data || typeof data !== "object") {
+    return ["The server's answer was empty, or not JSON."];
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const body = data as Record<string, any>;
+  const lines = [
+    `Fields in the answer: ${Object.keys(body).join(", ") || "none"}`,
+  ];
+
+  const places: [string, unknown][] = [
+    ["", body],
+    ["user", body.user],
+    ["profile", body.profile],
+    ["data", body.data],
+    ["data.user", body.data?.user],
+    ["data.profile", body.data?.profile],
+  ];
+  let found = false;
+  for (const [label, place] of places) {
+    if (!place || typeof place !== "object") continue;
+    for (const [key, value] of Object.entries(place)) {
+      if (/avatar|photo|picture|image|profile_?pic/i.test(key)) {
+        found = true;
+        lines.push(`${label ? `${label}.` : ""}${key} = ${shorten(value)}`);
+      }
+    }
+  }
+  if (!found) {
+    lines.push(
+      "No field named like avatar, photo, picture or image was found in the answer.",
+    );
+  }
+  return lines;
+};
+
+// Tries to load a picture two ways and says what happened
+export const checkPhotoLink = async (url: string): Promise<string> => {
+  const shownByBrowser = await new Promise<string>((resolve) => {
+    const img = new Image();
+    const timer = setTimeout(() => resolve("took too long to load"), 20000);
+    img.onload = () => {
+      clearTimeout(timer);
+      resolve("loads fine");
+    };
+    img.onerror = () => {
+      clearTimeout(timer);
+      resolve("could NOT be loaded by the browser");
+    };
+    img.src = url;
+  });
+
+  let fetched = "";
+  if (/^https?:/i.test(url)) {
+    try {
+      const res = await fetch(url, { mode: "cors", credentials: "omit" });
+      fetched = `; asked directly, the server answered ${res.status}`;
+    } catch {
+      fetched = "; asking directly was blocked (CORS) or failed";
+    }
+  }
+  return `${shorten(url)} ${shownByBrowser}${fetched}`;
+};
+
+export const PhotoDebugBox = ({
+  lines,
+  onClose,
+}: {
+  lines: string[];
+  onClose: () => void;
+}) => (
+  <div className="fixed inset-x-2 bottom-[calc(6rem+env(safe-area-inset-bottom))] z-[70] max-h-[55dvh] overflow-y-auto rounded-2xl bg-[#111827] p-3 text-[11px] leading-snug text-white shadow-lg">
+    <div className="flex items-center justify-between gap-3">
+      <strong className="text-[12px]">Picture check</strong>
+      <button
+        type="button"
+        onClick={onClose}
+        className="rounded-lg bg-white/15 px-3 py-1.5"
+      >
+        Close
+      </button>
+    </div>
+    <ul className="mt-2 space-y-1.5 break-all">
+      {lines.map((line, i) => (
+        <li key={i}>{line}</li>
+      ))}
+    </ul>
+  </div>
+);
