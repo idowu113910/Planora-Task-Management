@@ -27,7 +27,7 @@ const slides: Slide[] = [
 
 // Page colours behind the onboarding screens (light and dark mode)
 const LIGHT_BG = "#F1F4F8";
-const DARK_BG = "#0B1014";
+const DARK_BG = "#070B0E";
 
 const Chevron = () => (
   <svg
@@ -92,9 +92,9 @@ const OnBoarding = () => {
   return (
     // Outer layer: paints the background across the WHOLE screen. The
     // safe-area padding keeps content clear of notches and the home bar.
-    <div className="min-h-dvh w-full overflow-x-hidden bg-[#F1F4F8] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] dark:bg-[#0B1014]">
+    <div className="min-h-dvh w-full overflow-x-hidden bg-[#F1F4F8] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] dark:bg-[#070B0E]">
       {/* Inner column: same layout as before, fills the screen height */}
-      <div className="relative mx-auto flex min-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom))] w-full max-w-md flex-col overflow-x-hidden bg-[#F1F4F8] dark:bg-[#0B1014]">
+      <div className="relative mx-auto flex min-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom))] w-full max-w-md flex-col overflow-x-hidden bg-[#F1F4F8] dark:bg-[#070B0E]">
         {/* Decorative diagonal shape behind the image (top of the design) */}
         <svg
           aria-hidden="true"
@@ -104,7 +104,7 @@ const OnBoarding = () => {
         >
           <path
             d="M73.6054 -183.584L-89.0054 184.199L176.351 236.263L533.155 -112.813L73.6054 -183.584Z"
-            className="fill-[#EBEFF5] dark:fill-[#111820]"
+            className="fill-[#EBEFF5] dark:fill-[#0B1014]"
           />
         </svg>
 

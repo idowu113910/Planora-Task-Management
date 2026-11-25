@@ -52,7 +52,15 @@ const readFromStorage = (): Task[] => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     const parsed: unknown = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed.filter(isTask) : [];
+    return Array.isArray(parsed)
+      ? parsed
+          .filter(isTask)
+          .map((t) =>
+            isDay(t.date)
+              ? t
+              : { ...t, date: toDay(t.date) || localDay(new Date()) },
+          )
+      : [];
   } catch {
     return [];
   }
@@ -132,7 +140,34 @@ const rememberWhen = (
   }
 };
 
-const isDay = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value);
+function isDay(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function two(n: number): string {
+  return String(n).padStart(2, "0");
+}
+function localDay(d: Date): string {
+  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
+}
+
+// Turns whatever date the server sends (2026-11-27, 2026-11-27T00:00:00.000Z,
+// a timestamp, 11/27/2026 ...) into YYYY-MM-DD. Returns "" if it can't be read.
+function toDay(raw: string): string {
+  const value = raw.trim();
+  if (!value) return "";
+  if (isDay(value)) return value;
+  // A full timestamp with a time zone: take the day as it is on this device
+  if (/^\d{4}-\d{2}-\d{2}T/.test(value)) {
+    if (/(Z|[+-]\d{2}:?\d{2})$/.test(value)) {
+      const parsed = new Date(value);
+      if (!Number.isNaN(parsed.getTime())) return localDay(parsed);
+    }
+    return value.slice(0, 10);
+  }
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? "" : localDay(parsed);
+}
 
 export const fromServer = (raw: ServerTask): Task | null => {
   const body = raw as Record<string, unknown>;
@@ -177,9 +212,11 @@ export const fromServer = (raw: ServerTask): Task | null => {
   const title = text(body.title) || text(body.name);
   const all = readWhen();
   const remembered = all[id] ?? all[sigOf(title, projectName || "Work")];
-  const serverDate = rawDate.slice(0, 10);
-  // The server's date when it has a readable one, otherwise the one chosen here
-  const date = isDay(serverDate) ? serverDate : (remembered?.date ?? "");
+  const serverDate = toDay(rawDate);
+  // The server's date when it has a readable one, otherwise the one chosen
+  // here, otherwise today. It is never left empty, so no screen can show
+  // "Invalid Date".
+  const date = serverDate || remembered?.date || localDay(new Date());
   const time = rawTime ? rawTime.slice(0, 5) : (remembered?.time ?? "");
   if (isDay(serverDate))
     rememberWhen(id, serverDate, time, title, projectName || "Work");
