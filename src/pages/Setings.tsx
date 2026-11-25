@@ -2701,8 +2701,13 @@ const Setings = () => {
   // Sends the changes to the backend, then closes the pop-up and confirms.
   // Returns "" when saved, or the reason it wasn't (the pop-up shows it).
   const handleSave = async (next: ProfileData): Promise<string> => {
+    // A picture-only change stays in this browser, so nothing is sent
+    const textChanged =
+      next.name.trim() !== profileData.name.trim() ||
+      next.email.trim().toLowerCase() !==
+        profileData.email.trim().toLowerCase();
     try {
-      await updateProfile(next, profileData.email);
+      if (textChanged) await updateProfile(next, profileData.email);
     } catch (e) {
       return e instanceof Error && e.message
         ? e.message

@@ -52,6 +52,24 @@ const writeStored = (key: string, value: string) => {
   }
 };
 
+// The profile picture chosen in Settings is kept in this browser under this key
+// (the same one the Settings page saves the profile to)
+const PROFILE_KEY = "profileData";
+
+// The picture the person chose in Settings, or "" if they haven't chosen one
+const readProfilePhoto = (): string => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(PROFILE_KEY) ?? "null");
+    const photo = saved?.photo;
+    return typeof photo === "string" &&
+      (photo.startsWith("data:image/") || photo.startsWith("http"))
+      ? photo
+      : "";
+  } catch {
+    return "";
+  }
+};
+
 const formatFullName = (first?: string, last?: string): string =>
   [first?.trim(), last?.trim()].filter(Boolean).join(" ");
 
@@ -537,6 +555,19 @@ const Home = ({ name, completedTasks, totalTasks }: Props) => {
 
   const [displayName, setDisplayName] = useState<string>(initialFullName);
 
+  // The picture chosen in Settings. It also updates if it is changed in
+  // another tab of the app.
+  const [profilePhoto, setProfilePhoto] = useState<string>(readProfilePhoto);
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === PROFILE_KEY || e.key === null) {
+        setProfilePhoto(readProfilePhoto());
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
   // Sync with backend profile (/auth/me) so the full name stays accurate across
   // sessions, OAuth sign-ins, or when localStorage was cleared
   useEffect(() => {
@@ -712,11 +743,20 @@ const Home = ({ name, completedTasks, totalTasks }: Props) => {
       <div className="mx-auto mt-[clamp(8px,3vw,16px)] min-h-58 w-full max-w-md rounded-3xl bg-[#F8FAFC] p-[clamp(12px,4vw,16px)]">
         {/* flex is what makes the gap work and puts the icons on the right */}
         <div className="flex items-center justify-between gap-2.5">
-          <img
-            src={head}
-            alt=""
-            className="h-[clamp(32px,10vw,40px)] w-auto shrink-0"
-          />
+          {profilePhoto ? (
+            // The picture chosen in Settings, as a round photo
+            <img
+              src={profilePhoto}
+              alt=""
+              className="h-[clamp(32px,10vw,40px)] w-[clamp(32px,10vw,40px)] shrink-0 rounded-full bg-white object-cover"
+            />
+          ) : (
+            <img
+              src={head}
+              alt=""
+              className="h-[clamp(32px,10vw,40px)] w-auto shrink-0"
+            />
+          )}
 
           <div className="flex items-center gap-[clamp(4px,2vw,10px)]">
             <button
