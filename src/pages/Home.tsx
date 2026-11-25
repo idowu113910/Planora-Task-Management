@@ -22,6 +22,7 @@ import { showToast } from "../layout/Toast";
 import type { NewTask } from "../layout/AddTaskModal";
 import api, { authApi } from "../api/client";
 import InstallBanner from "../layout/InstallBanner";
+import { ProfilePhoto, findPhoto, isPhoto } from "../layout/profilePhoto";
 
 type Props = {
   // Optional override for the user's name shown in the greeting
@@ -53,25 +54,40 @@ const writeStored = (key: string, value: string) => {
   }
 };
 
+/* ========================================================================== */
+/*                              PROFILE PICTURE                               */
+/* ========================================================================== */
+// The picture lives on the server, so every device the person signs in on shows
+// it. A copy is kept in this browser so it appears straight away next time.
+
 // The profile picture chosen in Settings is kept in this browser under this key
 // (the same one the Settings page saves the profile to)
 const PROFILE_KEY = "profileData";
 
-// The picture the person chose in Settings, or "" if they haven't chosen one
-const isPhoto = (photo: unknown): photo is string =>
-  typeof photo === "string" &&
-  (photo.startsWith("data:image/") || photo.startsWith("http"));
-
-// Where the server lives (its picture links may start with "/")
-const API_ORIGIN = "https://planora-uliy.onrender.com";
-
 // A copy of the picture from the server, kept so it shows straight away
 const PHOTO_CACHE_KEY = "profilePhotoCache";
 
-const readProfilePhoto = (): string => {
+// Remembers which device-only picture was already sent to the server, so it is
+// not sent again and again
+const PHOTO_UPLOAD_KEY = "profilePhotoUploadTried";
+
+// The picture kept only on this device (chosen in Settings or when the account
+// was set up here), or "" if there is none
+const readLocalPhoto = (): string => {
   try {
     const saved = JSON.parse(localStorage.getItem(PROFILE_KEY) ?? "null");
-    if (isPhoto(saved?.photo)) return saved.photo;
+    return isPhoto(saved?.photo) ? saved.photo : "";
+  } catch {
+    return "";
+  }
+};
+
+// What to show first: the picture kept on this device, or the copy of the
+// server's picture from last time
+const readProfilePhoto = (): string => {
+  const local = readLocalPhoto();
+  if (local) return local;
+  try {
     const cached = localStorage.getItem(PHOTO_CACHE_KEY);
     return isPhoto(cached) ? cached : "";
   } catch {
@@ -88,38 +104,53 @@ const writePhotoCache = (photo: string) => {
   }
 };
 
-// Finds the picture in whatever shape the server answers GET /profile
-const readServerPhoto = (data: unknown): string => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const body = (data ?? {}) as Record<string, any>;
-  const user =
-    body.user ??
-    body.profile ??
-    body.data?.profile ??
-    body.data?.user ??
-    body.data ??
-    body;
-  for (const key of [
-    "avatar",
-    "avatarUrl",
-    "profilePicture",
-    "photo",
-    "image",
-    "imageUrl",
-    "picture",
-  ]) {
-    const value = user?.[key];
-    const link =
-      typeof value === "string"
-        ? value.trim()
-        : typeof value?.url === "string"
-          ? value.url.trim()
-          : "";
-    // A path starting with "/" belongs to the server
-    const full = link.startsWith("/") ? `${API_ORIGIN}${link}` : link;
-    if (isPhoto(full)) return full;
+// A short fingerprint of a picture, to tell whether it was sent already
+const photoSignature = (photo: string) => `${photo.length}:${photo.slice(-40)}`;
+
+// A picture added on one device is, until now, only kept on that device. This
+// sends it to the server (once), so the person's other devices can show it too.
+// Returns the picture's link as the server now has it ("" if it sent none back).
+const uploadLocalPhoto = async (
+  photo: string,
+  name: string,
+): Promise<string> => {
+  try {
+    if (localStorage.getItem(PHOTO_UPLOAD_KEY) === photoSignature(photo)) {
+      return "";
+    }
+  } catch {
+    // storage unavailable: it may be sent again next time
   }
-  return "";
+
+  try {
+    const blob = await (await fetch(photo)).blob();
+    const form = new FormData();
+    if (name) form.append("name", name);
+    form.append(
+      "avatar",
+      new File([blob], "avatar.jpg", { type: blob.type || "image/jpeg" }),
+    );
+    const res = await api.patch("/profile", form);
+    try {
+      localStorage.setItem(PHOTO_UPLOAD_KEY, photoSignature(photo));
+    } catch {
+      // storage unavailable
+    }
+    return findPhoto(res.data);
+  } catch (error) {
+    // If the server said no (a 4xx answer), trying again won't help. Anything
+    // else, such as no connection, is tried again next time.
+    const status = (error as { response?: { status?: number } })?.response
+      ?.status;
+    if (status && status >= 400 && status < 500) {
+      try {
+        localStorage.setItem(PHOTO_UPLOAD_KEY, photoSignature(photo));
+      } catch {
+        // storage unavailable
+      }
+    }
+    throw error;
+  }
 };
 
 const formatFullName = (first?: string, last?: string): string =>
@@ -636,30 +667,55 @@ const Home = ({ name, completedTasks, totalTasks }: Props) => {
   }, []);
 
   // Gets the picture saved on the server, so it shows on every device the
-  // person signs in on. A picture only kept on this device is used if the
-  // server has none.
+  // person signs in on. If the server has none but this device does (it was
+  // added here, when the account was set up), it is sent to the server so the
+  // person's other devices can show it too.
   useEffect(() => {
     let cancelled = false;
-    api
-      .get("/profile")
-      .then((res) => {
-        if (cancelled) return;
-        const serverPhoto = readServerPhoto(res.data);
-        writePhotoCache(serverPhoto);
-        let localPhoto = "";
-        try {
-          const saved = JSON.parse(localStorage.getItem(PROFILE_KEY) ?? "null");
-          if (isPhoto(saved?.photo)) localPhoto = saved.photo;
-        } catch {
-          // nothing saved on this device
-        }
-        setProfilePhoto(serverPhoto || localPhoto);
-      })
-      .catch(() => {
-        // keep whatever picture is already showing
-      });
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const load = (isRetry: boolean) => {
+      api
+        .get("/profile")
+        .then(async (res) => {
+          if (cancelled) return;
+          const serverPhoto = findPhoto(res.data);
+          // Shown in the browser's console, to help if a picture doesn't appear
+          console.info(
+            "[profile] picture from the server:",
+            serverPhoto || "none",
+          );
+          writePhotoCache(serverPhoto);
+
+          const localPhoto = readLocalPhoto();
+          setProfilePhoto(serverPhoto || localPhoto);
+
+          if (!serverPhoto && localPhoto.startsWith("data:image/")) {
+            try {
+              const uploaded = await uploadLocalPhoto(
+                localPhoto,
+                readStored(FULL_NAME_KEY),
+              );
+              if (cancelled || !uploaded) return;
+              writePhotoCache(uploaded);
+            } catch (error) {
+              console.warn("[profile] couldn't send the picture:", error);
+            }
+          }
+        })
+        .catch((error) => {
+          console.warn("[profile] couldn't load /profile:", error);
+          // The server may still be waking up: try once more shortly
+          if (!isRetry && !cancelled) {
+            retryTimer = setTimeout(() => load(true), 5000);
+          }
+        });
+    };
+
+    load(false);
     return () => {
       cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
     };
   }, []);
 
@@ -846,10 +902,11 @@ const Home = ({ name, completedTasks, totalTasks }: Props) => {
             className="relative shrink-0 touch-manipulation rounded-full before:absolute before:-inset-1.5 before:content-['']"
           >
             {profilePhoto ? (
-              // The picture chosen in Settings, as a round photo
-              <img
+              // The picture saved on the server (or chosen in Settings), as a
+              // round photo. If it can't be loaded, the default one is shown.
+              <ProfilePhoto
                 src={profilePhoto}
-                alt=""
+                fallbackSrc={head}
                 className="h-[clamp(32px,10vw,40px)] w-[clamp(32px,10vw,40px)] shrink-0 rounded-full bg-white object-cover"
               />
             ) : (

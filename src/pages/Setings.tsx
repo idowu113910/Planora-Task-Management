@@ -31,6 +31,7 @@ import {
   useThemePreference,
 } from "../layout/Theme.";
 import type { ThemePreference } from "../layout/Theme.";
+import { ProfilePhoto, findPhoto } from "../layout/profilePhoto";
 
 type Screen =
   | "settings"
@@ -735,21 +736,6 @@ const profileRequest = async (
   return data;
 };
 
-// Turns whatever the server sends for the picture (a link, a path starting
-// with "/", or an object with a url) into a full link
-const normalizePhoto = (value: unknown): string => {
-  const text =
-    typeof value === "string"
-      ? value.trim()
-      : value && typeof value === "object"
-        ? String((value as { url?: unknown }).url ?? "").trim()
-        : "";
-  if (!text) return "";
-  return text.startsWith("/")
-    ? `${AUTH_API.replace(/\/api\/auth$/, "")}${text}`
-    : text;
-};
-
 // Reads name, email, picture and the date the account was created out of the
 // server's answer. THE ONE PLACE to match the field names if your backend
 // spells them differently.
@@ -780,14 +766,8 @@ const readProfile = (
     text(user?.name) ||
     [first, last].filter(Boolean).join(" ");
 
-  const photo =
-    normalizePhoto(user?.avatar) ||
-    normalizePhoto(user?.avatarUrl) ||
-    normalizePhoto(user?.photo) ||
-    normalizePhoto(user?.profilePicture) ||
-    normalizePhoto(user?.image) ||
-    normalizePhoto(user?.imageUrl) ||
-    normalizePhoto(user?.picture);
+  // The picture, wherever and however the server names it
+  const photo = findPhoto(data);
 
   // The day the account was created. Tries the usual field names first, then
   // the moment hidden inside a MongoDB id as a backup.
@@ -1055,9 +1035,9 @@ const ProfileScreen = ({
           </button>
 
           <div className="mt-1 flex items-center gap-3 min-[360px]:gap-4">
-            <img
+            <ProfilePhoto
               src={data.photo}
-              alt=""
+              fallbackSrc={avatar}
               className="h-12 w-12 shrink-0 rounded-full bg-[#F8FAFC] object-cover"
             />
 
@@ -2741,9 +2721,9 @@ const EditProfileModal = ({
                 aria-label="Change profile photo"
                 className="relative touch-manipulation"
               >
-                <img
+                <ProfilePhoto
                   src={photo}
-                  alt=""
+                  fallbackSrc={avatar}
                   className="h-[clamp(76px,24vw,92px)] w-[clamp(76px,24vw,92px)] rounded-2xl bg-[#EEF3F9] object-cover"
                 />
                 <span className="absolute -right-1.5 -bottom-1.5 flex h-6 w-6 items-center justify-center rounded-lg border-2 border-white bg-[#D8E5F3] text-[#1E3A5F]">
