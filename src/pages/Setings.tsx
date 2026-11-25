@@ -356,7 +356,7 @@ const storeProfile = (data: ProfileData): boolean => {
         email: data.email,
         // Only a picture the user chose is stored. The built-in avatar is
         // skipped because its file path changes when the app is rebuilt.
-        photo: data.photo.startsWith("data:") ? data.photo : "",
+        photo: /^(data:image\/|https?:)/.test(data.photo) ? data.photo : "",
       }),
     );
     return true;
@@ -652,6 +652,15 @@ const changePassword = async (current: string, next: string): Promise<void> => {
 
 const PROFILE_URL = `${AUTH_API.replace(/\/auth$/, "")}/profile`;
 
+// The name of the field the server stores the profile picture in. The picture
+// is sent with the PATCH below as a small image (a data URL). If your Swagger
+// calls this field something else (avatar, photo, image, imageUrl), change it
+// here. THE ONE PLACE for it.
+const PHOTO_FIELD = "profilePicture";
+
+// Home keeps a copy of the picture here so it can show it straight away
+const PHOTO_CACHE_KEY = "profilePhotoCache";
+
 // Sends a profile request with the person's token. If the token has run out
 // (401), the app's own client refreshes it once and the request is repeated.
 const profileRequest = async (
@@ -780,6 +789,7 @@ const fetchProfile = async () => readProfile(await profileRequest("GET"));
 const updateProfile = async (
   next: { name: string; email: string },
   previousEmail: string,
+  photo?: string,
 ): Promise<void> => {
   const [firstName, ...rest] = next.name.trim().split(/\s+/);
   const body: Record<string, unknown> = {
@@ -789,6 +799,7 @@ const updateProfile = async (
   if (next.email.trim().toLowerCase() !== previousEmail.trim().toLowerCase()) {
     body.email = next.email.trim();
   }
+  if (photo) body[PHOTO_FIELD] = photo;
   await profileRequest("PATCH", body);
 };
 
@@ -810,6 +821,7 @@ const clearLocalAccountData = () => {
       ACCOUNT_LAST_NAME_KEY,
       ACCOUNT_FULL_NAME_KEY,
       ACCOUNT_CREATED_KEY,
+      PHOTO_CACHE_KEY,
       "planora-tasks",
       "taskStatus",
       "planora-projects",
@@ -2572,7 +2584,8 @@ const EditProfileModal = ({
 }) => {
   // Changes are kept here until "Save changes", so Cancel throws them away
   const [name, setName] = useState(data.name);
-  const [email, setEmail] = useState(data.email);
+  // The email can't be changed here, so it is only shown
+  const email = data.email;
   const [photo, setPhoto] = useState(data.photo);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -2580,7 +2593,7 @@ const EditProfileModal = ({
   const panelRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  const canSave = name.trim() !== "" && /^\S+@\S+\.\S+$/.test(email.trim());
+  const canSave = name.trim() !== "";
 
   useEffect(() => {
     // Move focus into the pop-up, and give it back to the Edit button on close
@@ -2726,18 +2739,11 @@ const EditProfileModal = ({
                 type="email"
                 inputMode="email"
                 autoComplete="email"
-                autoCapitalize="none"
-                autoCorrect="off"
-                spellCheck={false}
-                enterKeyHint="done"
-                placeholder="Enter your email"
+                readOnly
+                aria-readonly="true"
                 value={email}
-                onChange={(e) => {
-                  setEmail(e.target.value);
-                  setError("");
-                }}
                 style={{ fontSize: "16px" }}
-                className={inputClass}
+                className={`${inputClass} cursor-not-allowed text-[#6B7280] opacity-70`}
               />
             </div>
           </div>
@@ -2816,7 +2822,8 @@ const Setings = () => {
           photo: photo || prev.photo,
         };
         // Keep the saved copy in step with the server's
-        if (hasSavedProfile()) storeProfile(next);
+        // A picture from the server is kept too, so Home can show it
+        if (hasSavedProfile() || photo) storeProfile(next);
         return next;
       });
     };
@@ -2882,20 +2889,44 @@ const Setings = () => {
   // Sends the changes to the backend, then closes the pop-up and confirms.
   // Returns "" when saved, or the reason it wasn't (the pop-up shows it).
   const handleSave = async (next: ProfileData): Promise<string> => {
-    // A picture-only change stays in this browser, so nothing is sent
     const textChanged =
       next.name.trim() !== profileData.name.trim() ||
       next.email.trim().toLowerCase() !==
         profileData.email.trim().toLowerCase();
-    try {
-      if (textChanged) await updateProfile(next, profileData.email);
-    } catch (e) {
-      return e instanceof Error && e.message
+    // A newly chosen picture is sent to the server too, so it shows on every
+    // device the person signs in on
+    const photoChanged =
+      next.photo !== profileData.photo && next.photo.startsWith("data:");
+    const failure = (e: unknown) =>
+      e instanceof Error && e.message
         ? e.message
         : "We couldn't save your changes. Please try again.";
+
+    let photoSynced = true;
+    if (textChanged || photoChanged) {
+      try {
+        await updateProfile(
+          next,
+          profileData.email,
+          photoChanged ? next.photo : undefined,
+        );
+      } catch (e) {
+        if (!photoChanged) return failure(e);
+        // The server refused the picture: still save the name and email, and
+        // keep the picture on this device
+        console.warn("[profile] the server didn't accept the picture:", e);
+        if (textChanged) {
+          try {
+            await updateProfile(next, profileData.email);
+          } catch (e2) {
+            return failure(e2);
+          }
+        }
+        photoSynced = false;
+      }
     }
 
-    // The picture is kept in this browser only
+    // A copy is kept in this browser (Home reads it from here)
     if (!storeProfile(next)) {
       return "Your changes were saved, but the picture couldn't be kept on this device. Try a different picture.";
     }
@@ -2908,7 +2939,11 @@ const Setings = () => {
 
     setProfileData(next);
     setIsEditing(false);
-    setToast("Profile updated successfully");
+    setToast(
+      photoSynced
+        ? "Profile updated successfully"
+        : "Profile updated. The picture is saved on this device only.",
+    );
     return "";
   };
 

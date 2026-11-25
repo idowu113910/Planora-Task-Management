@@ -20,7 +20,7 @@ import type { Task } from "../layout/taskStore";
 import AddTaskModal from "../layout/AddTaskModal";
 import { showToast } from "../layout/Toast";
 import type { NewTask } from "../layout/AddTaskModal";
-import { authApi } from "../api/client";
+import api, { authApi } from "../api/client";
 
 type Props = {
   // Optional override for the user's name shown in the greeting
@@ -57,17 +57,55 @@ const writeStored = (key: string, value: string) => {
 const PROFILE_KEY = "profileData";
 
 // The picture the person chose in Settings, or "" if they haven't chosen one
+const isPhoto = (photo: unknown): photo is string =>
+  typeof photo === "string" &&
+  (photo.startsWith("data:image/") || photo.startsWith("http"));
+
+// A copy of the picture from the server, kept so it shows straight away
+const PHOTO_CACHE_KEY = "profilePhotoCache";
+
 const readProfilePhoto = (): string => {
   try {
     const saved = JSON.parse(localStorage.getItem(PROFILE_KEY) ?? "null");
-    const photo = saved?.photo;
-    return typeof photo === "string" &&
-      (photo.startsWith("data:image/") || photo.startsWith("http"))
-      ? photo
-      : "";
+    if (isPhoto(saved?.photo)) return saved.photo;
+    const cached = localStorage.getItem(PHOTO_CACHE_KEY);
+    return isPhoto(cached) ? cached : "";
   } catch {
     return "";
   }
+};
+
+const writePhotoCache = (photo: string) => {
+  try {
+    if (photo) localStorage.setItem(PHOTO_CACHE_KEY, photo);
+    else localStorage.removeItem(PHOTO_CACHE_KEY);
+  } catch {
+    // storage unavailable: it is simply loaded again next time
+  }
+};
+
+// Finds the picture in whatever shape the server answers GET /profile
+const readServerPhoto = (data: unknown): string => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const body = (data ?? {}) as Record<string, any>;
+  const user =
+    body.user ??
+    body.profile ??
+    body.data?.profile ??
+    body.data?.user ??
+    body.data ??
+    body;
+  for (const key of [
+    "profilePicture",
+    "photo",
+    "avatar",
+    "image",
+    "imageUrl",
+    "picture",
+  ]) {
+    if (isPhoto(user?.[key])) return user[key];
+  }
+  return "";
 };
 
 const formatFullName = (first?: string, last?: string): string =>
@@ -566,6 +604,34 @@ const Home = ({ name, completedTasks, totalTasks }: Props) => {
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
+  }, []);
+
+  // Gets the picture saved on the server, so it shows on every device the
+  // person signs in on. A picture only kept on this device is used if the
+  // server has none.
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .get("/profile")
+      .then((res) => {
+        if (cancelled) return;
+        const serverPhoto = readServerPhoto(res.data);
+        writePhotoCache(serverPhoto);
+        let localPhoto = "";
+        try {
+          const saved = JSON.parse(localStorage.getItem(PROFILE_KEY) ?? "null");
+          if (isPhoto(saved?.photo)) localPhoto = saved.photo;
+        } catch {
+          // nothing saved on this device
+        }
+        setProfilePhoto(serverPhoto || localPhoto);
+      })
+      .catch(() => {
+        // keep whatever picture is already showing
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Sync with backend profile (/auth/me) so the full name stays accurate across
