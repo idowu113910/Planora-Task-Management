@@ -36,15 +36,6 @@ const TOAST_DURATION = 5000;
 // The page users land on after signing in. Change this to your home page route.
 const HOME_PATH = "/home";
 
-// The same password endpoints the Settings page uses
-const AUTH_API = "https://planora-uliy.onrender.com/api/auth";
-const FORGOT_PASSWORD_URL = `${AUTH_API}/forgot-password`;
-const VERIFY_RESET_CODE_URL = `${AUTH_API}/verify-reset-code`;
-const RESET_PASSWORD_URL = `${AUTH_API}/reset-password`;
-
-// Render's free plan can take up to a minute to wake a sleeping server
-const RESET_TIMEOUT = 60000;
-
 // How long to wait for the login request before giving up (milliseconds).
 // Render's free plan can take up to a minute to wake a sleeping server.
 const LOGIN_TIMEOUT = 60000;
@@ -165,72 +156,147 @@ const readPersonName = (data: unknown): string => {
   );
 };
 
-// Turns a failed password request into a readable message. Validation errors
-// from the server list the exact problem under "details".
-const getResetError = (e: unknown, fallback: string): string => {
-  if (axios.isAxiosError(e)) {
-    if (e.code === "ECONNABORTED") {
-      return "The server took too long to respond. Please try again.";
-    }
-    if (!e.response) {
-      return "Couldn't reach the server. Check your connection and try again.";
-    }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const data = e.response.data as Record<string, any> | undefined;
-    const detail = Array.isArray(data?.details) ? data?.details[0]?.msg : "";
-    if (typeof detail === "string" && detail) return detail;
-    const message = data?.message ?? data?.error;
-    if (typeof message === "string" && message) return message;
-    if (e.response.status === 429) {
-      return "Too many attempts. Please wait a moment and try again.";
-    }
-    if (e.response.status >= 500) {
-      return "Something went wrong on our side. Please try again shortly.";
+/* ========================================================================== */
+/*                     PASSWORD RESET ENDPOINTS (BACKEND)                     */
+/* ========================================================================== */
+// The same three endpoints the Settings page uses:
+//   POST /forgot-password      emails a code to the address
+//   POST /verify-reset-code    checks the code, answers with a resetToken
+//   POST /reset-password       sets the new password, using that resetToken
+
+const AUTH_API = "https://planora-uliy.onrender.com/api/auth";
+const FORGOT_PASSWORD_URL = `${AUTH_API}/forgot-password`;
+const VERIFY_RESET_CODE_URL = `${AUTH_API}/verify-reset-code`;
+const RESET_PASSWORD_URL = `${AUTH_API}/reset-password`;
+
+// How long to wait before a new code can be requested (seconds)
+const RESEND_SECONDS = 30;
+
+// While you are testing, error messages also show the server's status number
+// (like 400 or 401), so a failure can be understood without opening the
+// browser's developer tools. Set this to false before you launch.
+const SHOW_ERROR_DETAILS = true;
+
+// Sends cookies with each request, like the rest of the app does
+const SEND_COOKIES = true;
+
+// Finds the readable message in whatever shape the server sends its errors
+const readServerMessage = (data: unknown): string | null => {
+  if (!data || typeof data !== "object") return null;
+  const body = data as Record<string, unknown>;
+
+  for (const key of ["message", "error", "msg"]) {
+    const value = body[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+
+  if (Array.isArray(body.errors)) {
+    const first: unknown = body.errors[0];
+    if (typeof first === "string") return first;
+    if (first && typeof first === "object") {
+      const msg = (first as Record<string, unknown>).message;
+      if (typeof msg === "string") return msg;
     }
   }
-  return fallback;
+  return null;
 };
 
-const resetPost = (url: string, body: Record<string, unknown>) =>
-  axios.post(url, body, { timeout: RESET_TIMEOUT, withCredentials: true });
+// Looks for a reset token in the usual places a server puts one
+const readResetToken = (data: unknown): string | undefined => {
+  if (!data || typeof data !== "object") return undefined;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const body = data as Record<string, any>;
+  const token = body.resetToken ?? body.token ?? body.data?.resetToken;
+  return typeof token === "string" && token ? token : undefined;
+};
+
+// Sends JSON to the backend and returns whatever JSON it answers with. Throws
+// an Error with a readable message if the request fails.
+const postJson = async (
+  url: string,
+  body: Record<string, unknown>,
+  fallbackMessage: string,
+): Promise<unknown> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LOGIN_TIMEOUT);
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      ...(SEND_COOKIES ? { credentials: "include" as const } : {}),
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    throw new Error(
+      error instanceof DOMException && error.name === "AbortError"
+        ? "The server is taking too long to respond. Please try again."
+        : "Can't reach the server. Check your internet connection and try again.",
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+
+  // The body may be empty or not JSON, which is fine
+  let data: unknown = null;
+  try {
+    data = await response.json();
+  } catch {
+    data = null;
+  }
+
+  if (!response.ok) {
+    const message =
+      readServerMessage(data) ??
+      (response.status === 429
+        ? "Too many attempts. Please wait a moment and try again."
+        : response.status >= 500
+          ? "Something went wrong on our side. Please try again shortly."
+          : fallbackMessage);
+    throw new Error(
+      SHOW_ERROR_DETAILS ? `${message} (status ${response.status})` : message,
+    );
+  }
+
+  return data;
+};
 
 // 1. Emails a reset code to the address
 const sendResetCode = async (email: string): Promise<void> => {
-  try {
-    await resetPost(FORGOT_PASSWORD_URL, { email });
-  } catch (e) {
-    throw new Error(
-      getResetError(
-        e,
-        "We couldn't send the code. Please check the email address and try again.",
-      ),
-    );
-  }
+  await postJson(
+    FORGOT_PASSWORD_URL,
+    { email },
+    "We couldn't send the code. Please check the email address and try again.",
+  );
 };
 
-// 2. Checks the code. The server answers with a resetToken, which step 3 needs.
+// 2. Checks the code. Throws if it is wrong or expired. The server answers
+// with a resetToken, which step 3 needs.
 const verifyResetCode = async (
   email: string,
   code: string,
 ): Promise<string> => {
+  // Stop here if the boxes didn't produce exactly the right number of digits
   if (!new RegExp(`^\\d{${CODE_LENGTH}}$`).test(code)) {
-    throw new Error(`Please enter all ${CODE_LENGTH} digits of the code.`);
-  }
-  let data: unknown;
-  try {
-    data = (await resetPost(VERIFY_RESET_CODE_URL, { email, code })).data;
-  } catch (e) {
     throw new Error(
-      getResetError(e, "That code didn't work. Please check it and try again."),
+      `Please enter all ${CODE_LENGTH} digits of the code (got ${code.length}).`,
     );
   }
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const body = (data ?? {}) as Record<string, any>;
-  const token = body.resetToken ?? body.token ?? body.data?.resetToken;
-  if (typeof token !== "string" || !token) {
+  const data = await postJson(
+    VERIFY_RESET_CODE_URL,
+    { email, code },
+    "That code didn't work. Please check it and try again.",
+  );
+  const resetToken = readResetToken(data);
+  if (!resetToken) {
     throw new Error("We couldn't verify the code. Please try again.");
   }
-  return token;
+  return resetToken;
 };
 
 // 3. Sets the new password, using the resetToken from step 2
@@ -238,17 +304,11 @@ const resetPassword = async (
   resetToken: string,
   newPassword: string,
 ): Promise<void> => {
-  try {
-    await resetPost(RESET_PASSWORD_URL, {
-      resetToken,
-      newPassword,
-      confirmPassword: newPassword,
-    });
-  } catch (e) {
-    throw new Error(
-      getResetError(e, "We couldn't reset your password. Please try again."),
-    );
-  }
+  await postJson(
+    RESET_PASSWORD_URL,
+    { resetToken, newPassword, confirmPassword: newPassword },
+    "We couldn't reset your password. Please try again.",
+  );
 };
 
 // Turns any login failure into a readable message for the user
@@ -302,8 +362,6 @@ const WelcomeBack = ({ name: nameProp, email: emailProp }: Props) => {
 
   // Reset code screen: one entry per box
   const [digits, setDigits] = useState<string[]>(emptyDigits);
-  // Given by the server once the code is right; needed to set the password
-  const [resetToken, setResetToken] = useState("");
   const codeRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   // Create new password screen
@@ -314,6 +372,16 @@ const WelcomeBack = ({ name: nameProp, email: emailProp }: Props) => {
 
   // "Account Verified Successfully" toast
   const [showToast, setShowToast] = useState(false);
+
+  // The token the server gives once the reset code is correct. It is needed to
+  // set the new password.
+  const [resetToken, setResetToken] = useState<string | undefined>(undefined);
+
+  // Seconds left before a new reset code can be requested
+  const [secondsLeft, setSecondsLeft] = useState(0);
+
+  // Green message on the sign in screen, e.g. after the password was reset
+  const [successMsg, setSuccessMsg] = useState("");
 
   // Error shown on the sign in / forgot password / reset code screens
   const [errorMsg, setErrorMsg] = useState("");
@@ -347,6 +415,13 @@ const WelcomeBack = ({ name: nameProp, email: emailProp }: Props) => {
     if (view === "code") codeRefs.current[0]?.focus();
   }, [view]);
 
+  // Counts down until a new reset code can be requested
+  useEffect(() => {
+    if (secondsLeft <= 0) return;
+    const timer = setTimeout(() => setSecondsLeft((n) => n - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [secondsLeft]);
+
   // The toast closes by itself after a few seconds (or when it is tapped)
   useEffect(() => {
     if (!showToast) return;
@@ -360,6 +435,7 @@ const WelcomeBack = ({ name: nameProp, email: emailProp }: Props) => {
   const handleSubmit = async () => {
     if (!canSubmit) return;
     setErrorMsg("");
+    setSuccessMsg("");
     setView("loading");
     try {
       // 1. Sign in through client.ts. It saves the tokens itself, so the home
@@ -436,6 +512,7 @@ const WelcomeBack = ({ name: nameProp, email: emailProp }: Props) => {
     try {
       await sendResetCode(email.trim());
       setDigits(emptyDigits());
+      setSecondsLeft(RESEND_SECONDS);
       setView("code");
     } catch (e) {
       setErrorMsg(
@@ -479,8 +556,16 @@ const WelcomeBack = ({ name: nameProp, email: emailProp }: Props) => {
     }
   };
 
+  // Sets the new password on the server. Only after that works does it go
+  // back to the sign in screen, with everything from the reset cleared.
   const handleCreatePassword = async () => {
-    if (!canCreate || !resetToken) return;
+    if (!canCreate) return;
+    if (!resetToken) {
+      setErrorMsg("Please enter your reset code again.");
+      setView("code");
+      return;
+    }
+
     setErrorMsg("");
     setView("loading");
     try {
@@ -495,7 +580,6 @@ const WelcomeBack = ({ name: nameProp, email: emailProp }: Props) => {
       return;
     }
 
-    // Back to the sign in screen, with everything from the reset cleared
     setPassword("");
     setShowPassword(false);
     setNewPassword("");
@@ -503,9 +587,10 @@ const WelcomeBack = ({ name: nameProp, email: emailProp }: Props) => {
     setShowNew(false);
     setShowConfirm(false);
     setDigits(emptyDigits());
-    setResetToken("");
-    setErrorMsg("");
+    setResetToken(undefined);
+    setSecondsLeft(0);
     setShowToast(false);
+    setSuccessMsg("Password changed. Please sign in with your new password.");
     setView("signin");
   };
 
@@ -846,10 +931,7 @@ const WelcomeBack = ({ name: nameProp, email: emailProp }: Props) => {
               <div className="mt-auto flex justify-end pt-8">
                 <button
                   type="button"
-                  onClick={() => {
-                    setErrorMsg("");
-                    setView("code");
-                  }}
+                  onClick={() => setView("code")}
                   className="flex h-10 touch-manipulation items-center gap-2 rounded-xl bg-[#F1F4F8] px-4 text-[13px] font-medium text-[#111827]"
                 >
                   <BsChevronLeft size={12} aria-hidden="true" />
@@ -921,13 +1003,19 @@ const WelcomeBack = ({ name: nameProp, email: emailProp }: Props) => {
 
               <p className="mt-6 text-center text-[12px] font-normal text-[#6B7280]">
                 Didn't get the code?{" "}
-                <button
-                  type="button"
-                  onClick={handleResend}
-                  className="touch-manipulation py-1 font-medium text-[#1A7431]"
-                >
-                  Request a new code
-                </button>
+                {secondsLeft > 0 ? (
+                  <span aria-live="polite" className="font-medium">
+                    Resend in 0:{String(secondsLeft).padStart(2, "0")}
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleResend}
+                    className="touch-manipulation py-1 font-medium text-[#1A7431]"
+                  >
+                    Request a new code
+                  </button>
+                )}
               </p>
 
               {/* Back pill, pushed to the bottom right of the sheet */}
@@ -1111,6 +1199,15 @@ const WelcomeBack = ({ name: nameProp, email: emailProp }: Props) => {
                   Continue
                 </button>
               </form>
+
+              {successMsg && (
+                <p
+                  role="status"
+                  className="mt-3 text-center text-[12px] font-normal text-[#1A7431]"
+                >
+                  {successMsg}
+                </p>
+              )}
 
               {errorMsg && (
                 <p

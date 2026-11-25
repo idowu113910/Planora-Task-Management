@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { useLocation } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { CiSearch } from "react-icons/ci";
 import { IoIosNotificationsOutline } from "react-icons/io";
 import { FiMoreHorizontal, FiEdit2, FiTrash2, FiCheck } from "react-icons/fi";
@@ -21,6 +21,7 @@ import AddTaskModal from "../layout/AddTaskModal";
 import { showToast } from "../layout/Toast";
 import type { NewTask } from "../layout/AddTaskModal";
 import api, { authApi } from "../api/client";
+import InstallBanner from "../layout/InstallBanner";
 
 type Props = {
   // Optional override for the user's name shown in the greeting
@@ -588,8 +589,23 @@ const CompletedItem = ({ task }: { task: Task }) => (
   </li>
 );
 
+// The Settings page remembers which screen was open under this key, so setting
+// it to "profile" makes Settings open straight on the Profile screen
+const SETTINGS_SCREEN_KEY = "settingsScreen";
+
 const Home = ({ name, completedTasks, totalTasks }: Props) => {
   const location = useLocation();
+  const navigate = useNavigate();
+
+  // Tapping the picture at the top left opens the Profile screen in Settings
+  const openProfile = () => {
+    try {
+      sessionStorage.setItem(SETTINGS_SCREEN_KEY, "profile");
+    } catch {
+      // storage blocked: Settings just opens on its main list
+    }
+    navigate("/settings");
+  };
   const routeState = location.state as {
     firstName?: string;
     lastName?: string;
@@ -822,20 +838,28 @@ const Home = ({ name, completedTasks, totalTasks }: Props) => {
       <div className="mx-auto mt-[clamp(8px,3vw,16px)] min-h-58 w-full max-w-md rounded-3xl bg-[#F8FAFC] p-[clamp(12px,4vw,16px)]">
         {/* flex is what makes the gap work and puts the icons on the right */}
         <div className="flex items-center justify-between gap-2.5">
-          {profilePhoto ? (
-            // The picture chosen in Settings, as a round photo
-            <img
-              src={profilePhoto}
-              alt=""
-              className="h-[clamp(32px,10vw,40px)] w-[clamp(32px,10vw,40px)] shrink-0 rounded-full bg-white object-cover"
-            />
-          ) : (
-            <img
-              src={head}
-              alt=""
-              className="h-[clamp(32px,10vw,40px)] w-auto shrink-0"
-            />
-          )}
+          {/* The extra space around the picture makes it easy to tap */}
+          <button
+            type="button"
+            onClick={openProfile}
+            aria-label="Open profile"
+            className="relative shrink-0 touch-manipulation rounded-full before:absolute before:-inset-1.5 before:content-['']"
+          >
+            {profilePhoto ? (
+              // The picture chosen in Settings, as a round photo
+              <img
+                src={profilePhoto}
+                alt=""
+                className="h-[clamp(32px,10vw,40px)] w-[clamp(32px,10vw,40px)] shrink-0 rounded-full bg-white object-cover"
+              />
+            ) : (
+              <img
+                src={head}
+                alt=""
+                className="h-[clamp(32px,10vw,40px)] w-auto shrink-0"
+              />
+            )}
+          </button>
 
           <div className="flex items-center gap-[clamp(4px,2vw,10px)]">
             <button
@@ -884,6 +908,10 @@ const Home = ({ name, completedTasks, totalTasks }: Props) => {
           <ProgressRing percent={percent} />
         </div>
       </div>
+
+      {/* "Install Planora" banner. Only shows when the app can be installed
+          and hasn't been installed or dismissed already. */}
+      <InstallBanner />
 
       <div className="mx-auto flex min-h-68.5 w-full max-w-md flex-col gap-2.5 rounded-3xl bg-[#FFFFFF] p-[clamp(12px,4vw,16px)] mt-8">
         <h4 className="text-[12px] font-normal text-[#6B7280]">

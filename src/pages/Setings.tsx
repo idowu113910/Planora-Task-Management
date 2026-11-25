@@ -21,6 +21,7 @@ import {
   FiEye,
   FiEyeOff,
   FiRefreshCw,
+  FiLogOut,
 } from "react-icons/fi";
 import { authApi } from "../api/client";
 import { markSignedOut } from "../auth";
@@ -871,6 +872,50 @@ const SIGN_IN_PATH = "/signin";
 // stays on this screen.
 const signOutEverywhere = async (): Promise<void> => {
   // TODO: connect to your sign-out endpoint
+};
+
+// The sign out endpoint, and how long to wait for it. Signing out never waits
+// longer than this, so a sleeping server can't leave the person stuck.
+const SIGN_OUT_URL = `${AUTH_API}/logout`;
+const SIGN_OUT_WAIT_MS = 4000;
+
+// Signs the person out on this device. The server is told so it can end the
+// session, but the person is signed out here whether or not it answers. Only
+// the login is removed: the name and email stay, so the sign in page can greet
+// them by name next time. This function never throws.
+const signOutThisDevice = async (): Promise<void> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SIGN_OUT_WAIT_MS);
+  try {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    };
+    const token = readStored(TOKEN_KEY);
+    if (token) headers.Authorization = `Bearer ${token}`;
+
+    await fetch(SIGN_OUT_URL, {
+      method: "POST",
+      headers,
+      ...(SEND_COOKIES ? { credentials: "include" as const } : {}),
+      body: JSON.stringify({
+        refreshToken: readStored(REFRESH_KEY) || undefined,
+      }),
+      signal: controller.signal,
+    });
+  } catch {
+    // the server couldn't be reached in time: sign out on this device anyway
+  } finally {
+    clearTimeout(timer);
+  }
+
+  try {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(REFRESH_KEY);
+  } catch {
+    // storage blocked: nothing to remove
+  }
+  markSignedOut();
 };
 
 /* ========================================================================== */
@@ -2817,6 +2862,9 @@ const Setings = () => {
   const [createdAt, setCreatedAt] = useState<number | null>(readCreatedAt);
   const [isEditing, setIsEditing] = useState(false);
   const [toast, setToast] = useState("");
+  // true while signing out from the main list, so the button can't be pressed
+  // twice
+  const [signingOut, setSigningOut] = useState(false);
   const navigate = useNavigate();
 
   const closeEdit = useCallback(() => setIsEditing(false), []);
@@ -2990,6 +3038,15 @@ const Setings = () => {
     return "";
   };
 
+  // Signs out on this device and opens the sign in page. replace: the Back
+  // button can't return to the signed-in pages.
+  const handleSignOut = async () => {
+    if (signingOut) return;
+    setSigningOut(true);
+    await signOutThisDevice();
+    navigate(SIGN_IN_PATH, { replace: true });
+  };
+
   // The Profile row shows the saved name and email, and the Theme row the
   // chosen theme
   const themePreference = useThemePreference();
@@ -3085,6 +3142,18 @@ const Setings = () => {
             onOpen={setScreen}
             className="mt-2"
           />
+
+          {/* Sign out, under About. The bottom margin keeps it clear of the
+              bottom navigation bar. */}
+          <button
+            type="button"
+            onClick={handleSignOut}
+            disabled={signingOut}
+            className="mx-auto mt-4 mb-[calc(6rem+env(safe-area-inset-bottom))] flex min-h-12 w-full max-w-md touch-manipulation items-center justify-center gap-2 rounded-xl bg-white text-[0.875rem] text-[#EF4444] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <FiLogOut size={16} aria-hidden="true" />
+            {signingOut ? "Signing out…" : "Sign out"}
+          </button>
         </>
       )}
 
