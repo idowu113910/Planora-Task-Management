@@ -15,10 +15,11 @@ import { markSignedIn } from "../auth";
 import { authApi } from "../api/client"; // Update this path to match your actual client.ts location
 
 type Props = {
-  // The returning user's first name, shown in the greeting
+  // Optional. The returning user's first name, shown in the greeting. If you
+  // don't pass it, it is read from what sign up / the last sign in saved.
   name?: string;
-  // The returning user's email. The login endpoint needs it along with the
-  // password. If you don't pass it, it is read from localStorage (EMAIL_KEY).
+  // Optional. The returning user's email. If you don't pass it, it is read
+  // from localStorage (EMAIL_KEY).
   email?: string;
 };
 
@@ -39,10 +40,15 @@ const HOME_PATH = "/home";
 // Render's free plan can take up to a minute to wake a sleeping server.
 const LOGIN_TIMEOUT = 60000;
 
-// Where the signed-in user's email is kept in the browser, so the greeting
-// screen knows which account to sign in to. The tokens themselves are saved by
+// Where the account's details are kept in the browser. Sign up and the
+// Settings page use these same keys. The tokens themselves are saved by
 // client.ts.
 const EMAIL_KEY = "planora_email";
+const FIRST_NAME_KEY = "planora_first_name";
+const LAST_NAME_KEY = "planora_last_name";
+const FULL_NAME_KEY = "planora_full_name";
+const CREATED_AT_KEY = "planora_created_at";
+const PROFILE_KEY = "profileData";
 
 const emptyDigits = () => Array<string>(CODE_LENGTH).fill("");
 
@@ -65,31 +71,6 @@ const passwordRules = [
   },
 ];
 
-// Face ID style icon, drawn inline so it needs no extra package
-const FaceIdIcon = () => (
-  <svg
-    aria-hidden="true"
-    viewBox="0 0 40 40"
-    fill="none"
-    stroke="#1A7431"
-    strokeWidth="2"
-    strokeLinecap="round"
-    strokeLinejoin="round"
-    className="h-10 w-10"
-  >
-    {/* corners */}
-    <path d="M4 13V9a5 5 0 0 1 5-5h4" />
-    <path d="M27 4h4a5 5 0 0 1 5 5v4" />
-    <path d="M36 27v4a5 5 0 0 1-5 5h-4" />
-    <path d="M13 36H9a5 5 0 0 1-5-5v-4" />
-    {/* eyes, nose, smile */}
-    <path d="M14 15v3" />
-    <path d="M26 15v3" />
-    <path d="M20 15v6a1.5 1.5 0 0 1-1.5 1.5H18" />
-    <path d="M14 27c3 3 9 3 12 0" />
-  </svg>
-);
-
 // Shared input look (16px text so phones don't zoom in when it is tapped)
 const inputClass =
   "h-11 w-full min-w-0 rounded-xl border-[0.5px] border-[#E5EAF1] bg-white px-4 text-[16px] leading-normal font-normal text-[#111827] outline-none placeholder:text-[#C6CCD3] focus:border-[#1A7431]";
@@ -97,7 +78,7 @@ const inputClass =
 // Reads localStorage without crashing when it is blocked (private mode etc.)
 const readStored = (key: string): string => {
   try {
-    return localStorage.getItem(key) ?? "";
+    return localStorage.getItem(key)?.trim() ?? "";
   } catch {
     return "";
   }
@@ -107,8 +88,72 @@ const writeStored = (key: string, value: string) => {
   try {
     localStorage.setItem(key, value);
   } catch {
-    // storage unavailable: the greeting screen just won't remember the email
+    // storage unavailable: the greeting screen just won't remember it
   }
+};
+
+const removeStored = (key: string) => {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // nothing to remove
+  }
+};
+
+// The first name of the person who last signed up or signed in on this device.
+// Empty if nobody has, so no name is ever invented.
+const loadSavedFirstName = (): string => {
+  const first = readStored(FIRST_NAME_KEY);
+  if (first) return first;
+  const full = readStored(FULL_NAME_KEY);
+  return full ? full.split(/\s+/)[0] : "";
+};
+
+// Keeps the person's name where sign up and Settings look for it
+const saveName = (fullName: string) => {
+  const [first = "", ...rest] = fullName.trim().split(/\s+/);
+  writeStored(FULL_NAME_KEY, fullName.trim());
+  writeStored(FIRST_NAME_KEY, first);
+  writeStored(LAST_NAME_KEY, rest.join(" "));
+};
+
+// Forgets the details of whoever was here before, so one person's name or
+// profile can never show up for a different account
+const forgetAccountDetails = () => {
+  for (const key of [
+    FIRST_NAME_KEY,
+    LAST_NAME_KEY,
+    FULL_NAME_KEY,
+    CREATED_AT_KEY,
+    PROFILE_KEY,
+  ]) {
+    removeStored(key);
+  }
+};
+
+// Finds the person's name in whatever shape the server answers. Returns "" if
+// the answer has no name in it.
+const readPersonName = (data: unknown): string => {
+  if (!data || typeof data !== "object") return "";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const body = data as Record<string, any>;
+  const user =
+    body.user ??
+    body.profile ??
+    body.data?.profile ??
+    body.data?.user ??
+    body.data ??
+    body;
+  const text = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+
+  const first = text(user?.firstName) || text(user?.first_name);
+  const last = text(user?.lastName) || text(user?.last_name);
+  return (
+    text(user?.fullName) ||
+    text(user?.displayName) ||
+    text(user?.name) ||
+    [first, last].filter(Boolean).join(" ")
+  );
 };
 
 // TODO: replace the body with your real "send reset code" request. It should
@@ -151,12 +196,28 @@ const getLoginError = (e: unknown): string => {
   return "Sign in failed. Please try again.";
 };
 
-const WelcomeBack = ({ name = "Adaeze", email: emailProp }: Props) => {
+const WelcomeBack = ({ name: nameProp, email: emailProp }: Props) => {
   const navigate = useNavigate();
 
   const [view, setView] = useState<View>("signin");
 
+  // Who this device remembers: the person who last signed up or signed in.
+  // Both are empty for someone who has never had an account here.
+  const [rememberedEmail] = useState(() =>
+    (emailProp ?? readStored(EMAIL_KEY)).trim(),
+  );
+  const [rememberedName] = useState(
+    () => nameProp?.trim() || loadSavedFirstName(),
+  );
+
+  // "Use a different account" switches to typing in an email
+  const [useOtherAccount, setUseOtherAccount] = useState(false);
+
+  // A remembered person only needs their password. Anyone else types both.
+  const returningMode = rememberedEmail !== "" && !useOtherAccount;
+
   // Sign in screen
+  const [signInEmail, setSignInEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
 
@@ -179,8 +240,12 @@ const WelcomeBack = ({ name = "Adaeze", email: emailProp }: Props) => {
   // Error shown on the sign in / forgot password / reset code screens
   const [errorMsg, setErrorMsg] = useState("");
 
-  // The Continue button only works once something has been typed
-  const canSubmit = password.length > 0;
+  // The email the sign in will use
+  const accountEmail = returningMode ? rememberedEmail : signInEmail.trim();
+
+  // The Continue button only works once the email (when it is needed) looks
+  // valid and a password has been typed
+  const canSubmit = password.length > 0 && /^\S+@\S+\.\S+$/.test(accountEmail);
 
   // The reset button only works once the email looks valid
   const canReset = /^\S+@\S+\.\S+$/.test(email.trim());
@@ -212,24 +277,18 @@ const WelcomeBack = ({ name = "Adaeze", email: emailProp }: Props) => {
   }, [showToast]);
 
   // Shows the loading screen while signing in, then opens the home page.
-  // If it fails, goes back to the sign in screen with an error (the password
-  // stays typed in).
+  // If it fails, goes back to the sign in screen with an error (the email and
+  // password stay typed in).
   const handleSubmit = async () => {
     if (!canSubmit) return;
     setErrorMsg("");
     setView("loading");
     try {
-      const accountEmail = (emailProp ?? readStored(EMAIL_KEY)).trim();
-      if (!accountEmail) {
-        throw new Error(
-          "We couldn't find your account email. Please sign up or log in again.",
-        );
-      }
-
       // 1. Sign in through client.ts. It saves the tokens itself, so the home
       // page can ask /auth/me who is signed in.
+      let loginResponse: unknown;
       try {
-        await authApi.login(
+        loginResponse = await authApi.login(
           { email: accountEmail, password },
           { timeout: LOGIN_TIMEOUT },
         );
@@ -237,13 +296,32 @@ const WelcomeBack = ({ name = "Adaeze", email: emailProp }: Props) => {
         throw new Error(getLoginError(loginError));
       }
 
-      // 2. Remember the email for the greeting screen
+      // 2. A different person than the one remembered here? Forget the old
+      // name and profile so they can't show up for this account.
+      if (readStored(EMAIL_KEY).toLowerCase() !== accountEmail.toLowerCase()) {
+        forgetAccountDetails();
+      }
       writeStored(EMAIL_KEY, accountEmail);
 
-      // 3. Tell the app someone is signed in
+      // 3. Remember the name for next time's greeting: from the login answer,
+      // or else from /auth/me. If neither has a name, nothing is saved.
+      let personName = readPersonName(
+        (loginResponse as { data?: unknown } | undefined)?.data,
+      );
+      if (!personName) {
+        try {
+          const me = await authApi.me();
+          personName = readPersonName(me.data);
+        } catch {
+          // not critical: the greeting just won't have a name
+        }
+      }
+      if (personName) saveName(personName);
+
+      // 4. Tell the app someone is signed in
       markSignedIn();
 
-      // 4. Navigate to home page
+      // 5. Navigate to home page
       navigate(HOME_PATH, { replace: true });
     } catch (e) {
       setErrorMsg(
@@ -255,8 +333,20 @@ const WelcomeBack = ({ name = "Adaeze", email: emailProp }: Props) => {
     }
   };
 
-  const handleBiometrics = () => {
-    // TODO: connect to biometric sign-in (e.g. WebAuthn)
+  // Switches from the remembered account to typing in any email
+  const handleUseOtherAccount = () => {
+    setUseOtherAccount(true);
+    setSignInEmail("");
+    setPassword("");
+    setShowPassword(false);
+    setErrorMsg("");
+  };
+
+  // Opens the forgot password screen with the sign in email already filled in
+  const openForgot = () => {
+    setErrorMsg("");
+    setEmail((prev) => prev || accountEmail);
+    setView("forgot");
   };
 
   // Shows the loading screen, asks for a code, then opens the reset code
@@ -515,13 +605,35 @@ const WelcomeBack = ({ name = "Adaeze", email: emailProp }: Props) => {
                   Enter your email address to receive a reset code.
                 </p>
               </>
-            ) : (
+            ) : returningMode ? (
+              /* Someone this device remembers: their name from sign up, and
+                 the email they signed up with */
               <>
                 <h1 className="text-[clamp(18px,5.5vw,22px)] leading-tight font-semibold break-words text-[#111827]">
-                  Welcome Back, {name}
+                  Welcome Back{rememberedName ? `, ${rememberedName}` : ""}
+                </h1>
+                <p className="text-[clamp(13px,3.8vw,14px)] font-normal break-all text-[#6B7280]">
+                  {rememberedEmail}
+                </p>
+                <p className="text-[clamp(13px,3.8vw,14px)] font-normal text-[#6B7280]">
+                  Not you?{" "}
+                  <button
+                    type="button"
+                    onClick={handleUseOtherAccount}
+                    className="touch-manipulation font-medium text-[#1A7431]"
+                  >
+                    Use a different account
+                  </button>
+                </p>
+              </>
+            ) : (
+              /* Nobody remembered: no name is shown, only a plain sign in */
+              <>
+                <h1 className="text-[clamp(18px,5.5vw,22px)] leading-tight font-semibold break-words text-[#111827]">
+                  Sign In
                 </h1>
                 <p className="text-[clamp(13px,3.8vw,14px)] font-normal text-[#6B7280]">
-                  Not your account?{" "}
+                  New to Planora?{" "}
                   <a href="/signup" className="font-medium text-[#1A7431]">
                     Sign Up
                   </a>
@@ -806,6 +918,38 @@ const WelcomeBack = ({ name = "Adaeze", email: emailProp }: Props) => {
                 }}
                 className="flex flex-col"
               >
+                {/* The email is only asked for when this device doesn't
+                    remember who is signing in */}
+                {!returningMode && (
+                  <div className="mb-4 flex flex-col">
+                    <label
+                      htmlFor="signin-email"
+                      className="text-[14px] font-medium text-[#111827]"
+                    >
+                      Email Address
+                    </label>
+                    <input
+                      id="signin-email"
+                      name="email"
+                      type="email"
+                      inputMode="email"
+                      autoComplete="email"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      enterKeyHint="next"
+                      placeholder="Enter Email Address"
+                      value={signInEmail}
+                      onChange={(e) => {
+                        setSignInEmail(e.target.value);
+                        setErrorMsg("");
+                      }}
+                      style={{ fontSize: "16px" }}
+                      className={`mt-2 ${inputClass}`}
+                    />
+                  </div>
+                )}
+
                 <label
                   htmlFor="password"
                   className="text-[14px] font-medium text-[#111827]"
@@ -853,8 +997,7 @@ const WelcomeBack = ({ name = "Adaeze", email: emailProp }: Props) => {
                   href="#forgot-password"
                   onClick={(e) => {
                     e.preventDefault();
-                    setErrorMsg("");
-                    setView("forgot");
+                    openForgot();
                   }}
                   className="mt-4 w-fit touch-manipulation py-1 text-[12px] font-medium text-[#1A7431]"
                 >
@@ -878,17 +1021,6 @@ const WelcomeBack = ({ name = "Adaeze", email: emailProp }: Props) => {
                   {errorMsg}
                 </p>
               )}
-
-              <button
-                type="button"
-                onClick={handleBiometrics}
-                className="mx-auto mt-[clamp(20px,5dvh,32px)] flex touch-manipulation flex-col items-center gap-3 p-2"
-              >
-                <FaceIdIcon />
-                <span className="text-center text-[12px] font-normal text-[#6B7280]">
-                  Sign in with Biometrics
-                </span>
-              </button>
             </>
           )}
         </main>
