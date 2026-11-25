@@ -93,6 +93,35 @@ const makeId = () =>
 const text = (value: unknown): string =>
   typeof value === "string" ? value : "";
 
+// The day and time chosen for each task are also remembered in this browser, by
+// task id. If the server sends a task back without its date (or in a form that
+// can't be read), the remembered one is used, so the date never falls back to
+// "Today" by mistake.
+const WHEN_KEY = "planora-task-when";
+type When = { date: string; time: string };
+
+const readWhen = (): Record<string, When> => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(WHEN_KEY) ?? "null");
+    return saved && typeof saved === "object" ? saved : {};
+  } catch {
+    return {};
+  }
+};
+
+const rememberWhen = (id: string, date: string, time: string) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+  try {
+    const all = readWhen();
+    all[id] = { date, time };
+    localStorage.setItem(WHEN_KEY, JSON.stringify(all));
+  } catch {
+    // storage unavailable: the server's own date is used
+  }
+};
+
+const isDay = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value);
+
 export const fromServer = (raw: ServerTask): Task | null => {
   const body = raw as Record<string, unknown>;
   const rawId = body.id ?? body._id;
@@ -132,12 +161,20 @@ export const fromServer = (raw: ServerTask): Task | null => {
 
   const created = Date.parse(text(body.createdAt));
 
+  const id = String(rawId);
+  const remembered = readWhen()[id];
+  const serverDate = rawDate.slice(0, 10);
+  // The server's date when it has a readable one, otherwise the one chosen here
+  const date = isDay(serverDate) ? serverDate : (remembered?.date ?? "");
+  const time = rawTime ? rawTime.slice(0, 5) : (remembered?.time ?? "");
+  if (isDay(serverDate)) rememberWhen(id, serverDate, time);
+
   return {
-    id: String(rawId),
+    id,
     title: text(body.title) || text(body.name),
     project: projectName || "Work",
-    date: rawDate.slice(0, 10),
-    time: rawTime.slice(0, 5),
+    date,
+    time,
     priority,
     done,
     createdAt: Number.isNaN(created) ? Date.now() : created,
@@ -156,6 +193,7 @@ export const addTask = (input: NewTaskInput, id?: string): Task => {
     done: false,
     createdAt: Date.now(),
   };
+  rememberWhen(task.id, task.date, task.time ?? "");
   setTasks([...tasks, task]);
   return task;
 };
@@ -189,6 +227,7 @@ export const refreshTasks = (): Promise<void> => {
 export const updateTaskRemote = async (id: string, changes: NewTaskInput) => {
   try {
     await updateTask(id, changes);
+    rememberWhen(id, changes.date, changes.time ?? "");
     setTasks(tasks.map((t) => (t.id === id ? { ...t, ...changes } : t)));
   } catch (error) {
     showToast("Couldn't update task", taskErrorMessage(error));

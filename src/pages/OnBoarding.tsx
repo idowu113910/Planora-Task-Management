@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import first from "../assets/first.svg";
 import second from "../assets/second.svg";
 import welcome from "../assets/welcome.svg";
@@ -24,6 +24,9 @@ const slides: Slide[] = [
       "Turn your captured thoughts into projects and tasks, and keep everything in one place.",
   },
 ];
+
+// The dark colour of the onboarding screens
+const DARK_BG = "#0B1014";
 
 const Chevron = () => (
   <svg
@@ -53,13 +56,34 @@ const OnBoarding = () => {
   const handleSkip = () => setStep(slides.length);
   const navigate = useNavigate();
 
+  // While onboarding is open, the page behind it is dark too, so no light
+  // colour can show at the bottom, the sides or when the page bounces.
+  // The old colours are put back when the person leaves this screen.
+  useEffect(() => {
+    const targets = [
+      document.documentElement,
+      document.body,
+      document.getElementById("root"),
+    ].filter((el): el is HTMLElement => el !== null);
+
+    const previous = targets.map((el) => el.style.backgroundColor);
+    targets.forEach((el) => {
+      el.style.backgroundColor = DARK_BG;
+    });
+
+    return () => {
+      targets.forEach((el, i) => {
+        el.style.backgroundColor = previous[i];
+      });
+    };
+  }, []);
+
   return (
-    // Outer layer: paints the background across the WHOLE screen, so nothing
-    // else can show through at the bottom or sides. The safe-area padding keeps
-    // content clear of notches and the home bar.
-    <div className="min-h-dvh w-full overflow-x-hidden bg-[#F1F4F8] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
+    // Outer layer: paints the dark colour across the WHOLE screen. The
+    // safe-area padding keeps content clear of notches and the home bar.
+    <div className="min-h-dvh w-full overflow-x-hidden bg-[#0B1014] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]">
       {/* Inner column: same layout as before, fills the screen height */}
-      <div className="relative mx-auto flex min-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom))] w-full max-w-md flex-col overflow-x-hidden bg-[#F1F4F8]">
+      <div className="relative mx-auto flex min-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom))] w-full max-w-md flex-col overflow-x-hidden bg-[#0B1014]">
         {/* Decorative diagonal shape behind the image (top of the design) */}
         <svg
           aria-hidden="true"
@@ -69,7 +93,7 @@ const OnBoarding = () => {
         >
           <path
             d="M73.6054 -183.584L-89.0054 184.199L176.351 236.263L533.155 -112.813L73.6054 -183.584Z"
-            fill="#EBEFF5"
+            fill="#111820"
           />
         </svg>
 
@@ -88,10 +112,10 @@ const OnBoarding = () => {
             </div>
 
             <div className="relative z-10 flex flex-col gap-4 px-4">
-              <h2 className="text-[clamp(26px,8.5vw,32px)] font-medium leading-tight text-[#111827]">
+              <h2 className="text-[clamp(26px,8.5vw,32px)] font-medium leading-tight text-[#F1F4F8]">
                 Welcome to Planora.
               </h2>
-              <p className="text-[14px] font-normal leading-5.5 text-[#6B7280]">
+              <p className="text-[14px] font-normal leading-5.5 text-[#9CA3AF]">
                 Start managing your tasks in seconds.
               </p>
             </div>
@@ -103,31 +127,31 @@ const OnBoarding = () => {
                 onClick={() => {
                   navigate("/signup");
                 }}
-                className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#1A7431] text-[14px] font-normal text-white"
+                className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#1A732F] text-[14px] font-normal text-white"
               >
                 Create an Account
               </button>
             </div>
 
-            <p className="mt-5 flex items-center justify-center text-center text-[12px] font-normal text-[#6B7280]">
+            <p className="mt-5 flex items-center justify-center text-center text-[12px] font-normal text-[#9CA3AF]">
               Already have an account?&nbsp;
               <span
                 onClick={() => {
                   navigate("/signin");
                 }}
-                className="font-semibold text-[#1A7431] underline"
+                className="font-semibold text-[#2E9E4F] underline"
               >
                 Sign in
               </span>
             </p>
 
             <div className="mt-5.5 flex items-center gap-5 px-4">
-              <span className="h-[0.5px] flex-1 bg-[#D8E5F3]" />
-              <span className="text-[12px] font-normal text-[#6B7280]">OR</span>
-              <span className="h-[0.5px] flex-1 bg-[#D8E5F3]" />
+              <span className="h-[0.5px] flex-1 bg-[#2A323C]" />
+              <span className="text-[12px] font-normal text-[#9CA3AF]">OR</span>
+              <span className="h-[0.5px] flex-1 bg-[#2A323C]" />
             </div>
 
-            <p className="mb-4 mt-5 flex items-center justify-center text-[14px] font-normal text-[#6B7280] underline">
+            <p className="mb-4 mt-5 flex items-center justify-center text-[14px] font-normal text-[#9CA3AF] underline">
               Continue as Guest
             </p>
           </>
@@ -146,10 +170,10 @@ const OnBoarding = () => {
             </div>
 
             <div className="relative z-10 flex flex-col gap-3 px-4">
-              <h2 className="text-[clamp(26px,8.5vw,32px)] font-medium leading-tight text-[#111827]">
+              <h2 className="text-[clamp(26px,8.5vw,32px)] font-medium leading-tight text-[#F1F4F8]">
                 {slide.title}
               </h2>
-              <p className="text-[14px] font-normal leading-5.5 text-[#6B7280]">
+              <p className="text-[14px] font-normal leading-5.5 text-[#9CA3AF]">
                 {slide.description}
               </p>
             </div>
@@ -161,7 +185,7 @@ const OnBoarding = () => {
                 <span
                   key={i}
                   className={`h-1 rounded-full transition-all duration-300 ${
-                    i === step ? "w-3 bg-[#1A7431]" : "w-1 bg-[#C6CCD3]"
+                    i === step ? "w-3 bg-[#1A732F]" : "w-1 bg-[#3B434E]"
                   }`}
                 />
               ))}
@@ -170,7 +194,7 @@ const OnBoarding = () => {
             <div className="relative z-10 flex flex-col items-center gap-4 px-4 pb-4 pt-4">
               <button
                 onClick={handleNext}
-                className="flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-[#1A7431] text-[14px] font-normal text-white"
+                className="flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-[#1A732F] text-[14px] font-normal text-white"
               >
                 Next
                 <Chevron />
@@ -178,7 +202,7 @@ const OnBoarding = () => {
 
               <button
                 onClick={handleSkip}
-                className="text-[14px] font-normal leading-5.5 text-[#6B7280] underline"
+                className="text-[14px] font-normal leading-5.5 text-[#9CA3AF] underline"
               >
                 Skip
               </button>
