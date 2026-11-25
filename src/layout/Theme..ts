@@ -117,6 +117,15 @@ const buildDarkCss = (): string => {
   for (const [light, dark] of Object.entries(BORDERS)) {
     out.push(`${D}${cls(`border-[${light}]`)}{border-color:${dark}}`);
   }
+  // One-sided border colours (the moving arc of a loading spinner). Written
+  // after the rule above, so the arc keeps its own colour instead of being
+  // painted over by the ring's colour.
+  for (const [light, dark] of Object.entries(TEXTS)) {
+    out.push(`${D}${cls(`border-t-[${light}]`)}{border-top-color:${dark}}`);
+  }
+  // Full-screen loading screens use the page colour
+  out.push(`${D}.planora-loading{background-color:#0B0F14}`);
+
   for (const [light, dark] of Object.entries(DIVIDERS)) {
     out.push(
       `${D}${cls(`divide-[${light}]`)}>:not(:last-child){border-color:${dark}}`,

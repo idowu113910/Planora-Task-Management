@@ -671,7 +671,7 @@ const WelcomeBack = ({ name: nameProp, email: emailProp }: Props) => {
   // or checked
   if (view === "loading") {
     return (
-      <div className="flex min-h-dvh w-full touch-manipulation items-center justify-center bg-white">
+      <div className="planora-loading flex min-h-dvh w-full touch-manipulation items-center justify-center bg-white">
         <div role="status" aria-live="polite">
           <div className="h-12 w-12 animate-spin rounded-full border-4 border-[#D8E5F3] border-t-[#1A7431]" />
           <span className="sr-only">Loading...</span>
