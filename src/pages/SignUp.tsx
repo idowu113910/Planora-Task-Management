@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import axios from "axios";
 import {
@@ -247,52 +247,6 @@ const loadScript = (src: string): Promise<void> =>
     document.head.appendChild(script);
   });
 
-// Opens Google's sign-in window and returns Google's token for the person
-const getGoogleToken = async (): Promise<string> => {
-  if (!GOOGLE_CLIENT_ID) {
-    throw new Error("Google sign-in isn't set up yet.");
-  }
-  await loadScript(GOOGLE_SDK);
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const google = (window as any).google;
-  if (!google?.accounts?.oauth2) {
-    throw new Error("Couldn't load Google sign-in. Please try again.");
-  }
-
-  return new Promise<string>((resolve, reject) => {
-    const client = google.accounts.oauth2.initTokenClient({
-      client_id: GOOGLE_CLIENT_ID,
-      scope: "openid email profile",
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      callback: (response: any) => {
-        if (response?.access_token) resolve(response.access_token);
-        else if (response?.error === "access_denied")
-          reject(new CancelledError());
-        else reject(new Error("Google sign-in failed. Please try again."));
-      },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      error_callback: (error: any) => {
-        if (
-          error?.type === "popup_closed" ||
-          error?.type === "popup_failed_to_open"
-        ) {
-          reject(
-            error.type === "popup_closed"
-              ? new CancelledError()
-              : new Error(
-                  "Your browser blocked the Google window. Allow pop-ups and try again.",
-                ),
-          );
-        } else {
-          reject(new Error("Google sign-in failed. Please try again."));
-        }
-      },
-    });
-    client.requestAccessToken();
-  });
-};
-
 // Opens Apple's sign-in window and returns Apple's token (plus the person's
 // name, which Apple only sends the very first time)
 const getAppleToken = async (): Promise<{
@@ -331,25 +285,32 @@ const getAppleToken = async (): Promise<{
   }
 };
 
-// Signs in or signs up with Apple or Google. Gets the token from the provider,
-// sends it to your backend's oauth endpoint (the backend sets the session
-// cookies). Sends: { provider: "google" | "apple", token, user? }
+// Signs in or signs up with Apple or Google. Both give an ID token, which is
+// sent to the backend's oauth endpoint (the backend sets the session cookies).
+// Sends: { provider: "google" | "apple", idToken, user? }
+// For Google the token comes from Google's own button (see GoogleButton), so it
+// is passed in. For Apple it is fetched here.
 const signInWithProvider = async (
   provider: Provider,
+  googleIdToken?: string,
 ): Promise<{ firstName?: string }> => {
-  let token: string;
+  let idToken: string;
   let user: unknown;
 
   if (provider === "google") {
-    token = await getGoogleToken();
+    if (!googleIdToken)
+      throw new Error("Google sign-in failed. Please try again.");
+    idToken = googleIdToken;
   } else {
-    ({ token, user } = await getAppleToken());
+    const apple = await getAppleToken();
+    idToken = apple.token;
+    user = apple.user;
   }
 
   try {
     const res = await axios.post(
       OAUTH_URL,
-      { provider, token, ...(user ? { user } : {}) },
+      { provider, idToken, ...(user ? { user } : {}) },
       {
         timeout: REQUEST_TIMEOUT_MS,
         withCredentials: true,
@@ -371,6 +332,79 @@ const signInWithProvider = async (
       ),
     );
   }
+};
+
+// Google's own sign-in button, laid invisibly over the "Continue with Google"
+// button. The person taps what looks like our button, but the tap lands on
+// Google's button, which opens the account window and hands back an ID token
+// (the server needs an ID token, which Google only gives this way).
+const GoogleButton = ({
+  onToken,
+  onError,
+}: {
+  onToken: (idToken: string) => void;
+  onError: (message: string) => void;
+}) => {
+  const holder = useRef<HTMLDivElement>(null);
+  // Keep the latest handlers without re-drawing Google's button each time
+  const handlers = useRef({ onToken, onError });
+  handlers.current = { onToken, onError };
+
+  useEffect(() => {
+    if (!GOOGLE_CLIENT_ID) return;
+    let cancelled = false;
+
+    loadScript(GOOGLE_SDK)
+      .then(() => {
+        const el = holder.current;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const google = (window as any).google;
+        if (cancelled || !el || !google?.accounts?.id) return;
+
+        google.accounts.id.initialize({
+          client_id: GOOGLE_CLIENT_ID,
+          ux_mode: "popup",
+          auto_select: false,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          callback: (response: any) => {
+            if (response?.credential)
+              handlers.current.onToken(response.credential);
+            else
+              handlers.current.onError(
+                "Google sign-in failed. Please try again.",
+              );
+          },
+        });
+        el.innerHTML = "";
+        google.accounts.id.renderButton(el, {
+          type: "standard",
+          theme: "outline",
+          size: "large",
+          text: "continue_with",
+          width: Math.min(400, Math.max(200, Math.round(el.offsetWidth))),
+        });
+      })
+      .catch(() => {
+        if (!cancelled)
+          handlers.current.onError(
+            "Couldn't load Google sign-in. Check your connection and try again.",
+          );
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Invisible, but still tappable. It is stretched a little taller than
+  // Google's 40px button so it covers our 44px one.
+  return (
+    <div
+      ref={holder}
+      aria-hidden="true"
+      className="absolute inset-0 flex origin-center scale-y-[1.12] items-center justify-center overflow-hidden rounded-xl opacity-[0.01]"
+    />
+  );
 };
 
 type Field = {
@@ -520,14 +554,14 @@ const SignUp = () => {
     }
   };
 
-  // Apple / Google: opens the provider's window, then shows the loading screen
-  // while the backend checks the token, then opens the home page.
-  const handleProvider = async (provider: Provider) => {
+  // Apple / Google: gets the provider's token, then shows the loading screen
+  // while the backend checks it, then opens the home page.
+  const handleProvider = async (provider: Provider, googleIdToken?: string) => {
     if (loading) return;
     setErrorMsg("");
     try {
       setLoading(true);
-      const { firstName } = await signInWithProvider(provider);
+      const { firstName } = await signInWithProvider(provider, googleIdToken);
       navigate(HOME_PATH, { replace: true, state: { firstName } });
     } catch (error) {
       setLoading(false);
@@ -756,16 +790,28 @@ const SignUp = () => {
               </span>
             </button>
 
-            <button
-              type="button"
-              onClick={() => handleProvider("google")}
-              className="flex h-11 w-full touch-manipulation items-center justify-center gap-2 rounded-xl bg-white px-3 text-[#1A7431]"
-            >
-              <FcGoogle className="h-5 w-5 shrink-0" />
-              <span className="text-[14px] font-normal">
-                Continue with Google
-              </span>
-            </button>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => {
+                  // Without a client ID Google's button can't be drawn
+                  if (!GOOGLE_CLIENT_ID)
+                    setErrorMsg("Google sign-in isn't set up yet.");
+                }}
+                className="flex h-11 w-full touch-manipulation items-center justify-center gap-2 rounded-xl bg-white px-3 text-[#1A7431]"
+              >
+                <FcGoogle className="h-5 w-5 shrink-0" />
+                <span className="text-[14px] font-normal">
+                  Continue with Google
+                </span>
+              </button>
+              {GOOGLE_CLIENT_ID && (
+                <GoogleButton
+                  onToken={(idToken) => handleProvider("google", idToken)}
+                  onError={setErrorMsg}
+                />
+              )}
+            </div>
           </form>
         </div>
       </div>
