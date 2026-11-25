@@ -658,11 +658,10 @@ const changePassword = async (current: string, next: string): Promise<void> => {
 
 const PROFILE_URL = `${AUTH_API.replace(/\/auth$/, "")}/profile`;
 
-// The name of the field the server stores the profile picture in. The picture
-// is sent with the PATCH below as a small image (a data URL). If your Swagger
-// calls this field something else (avatar, photo, image, imageUrl), change it
-// here. THE ONE PLACE for it.
-const PHOTO_FIELD = "profilePicture";
+// PATCH /api/profile takes a form (multipart/form-data) with two fields:
+//   name    the display name
+//   avatar  the picture, as an image file (JPEG, PNG or WebP, up to 5 MB)
+const PHOTO_FIELD = "avatar";
 
 // Home keeps a copy of the picture here so it can show it straight away
 const PHOTO_CACHE_KEY = "profilePhotoCache";
@@ -671,14 +670,17 @@ const PHOTO_CACHE_KEY = "profilePhotoCache";
 // (401), the app's own client refreshes it once and the request is repeated.
 const profileRequest = async (
   method: "GET" | "PATCH" | "DELETE",
-  body?: Record<string, unknown>,
+  body?: Record<string, unknown> | FormData,
   retried = false,
 ): Promise<unknown> => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
+  // A form sets its own Content-Type (the browser adds the boundary)
   const headers: Record<string, string> = { Accept: "application/json" };
-  if (body) headers["Content-Type"] = "application/json";
+  if (body && !(body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+  }
   const token = readStored(TOKEN_KEY);
   if (token) headers.Authorization = `Bearer ${token}`;
 
@@ -688,7 +690,9 @@ const profileRequest = async (
       method,
       headers,
       ...(SEND_COOKIES ? { credentials: "include" as const } : {}),
-      ...(body ? { body: JSON.stringify(body) } : {}),
+      ...(body
+        ? { body: body instanceof FormData ? body : JSON.stringify(body) }
+        : {}),
       signal: controller.signal,
     });
   } catch (error) {
@@ -730,6 +734,21 @@ const profileRequest = async (
   return data;
 };
 
+// Turns whatever the server sends for the picture (a link, a path starting
+// with "/", or an object with a url) into a full link
+const normalizePhoto = (value: unknown): string => {
+  const text =
+    typeof value === "string"
+      ? value.trim()
+      : value && typeof value === "object"
+        ? String((value as { url?: unknown }).url ?? "").trim()
+        : "";
+  if (!text) return "";
+  return text.startsWith("/")
+    ? `${AUTH_API.replace(/\/api\/auth$/, "")}${text}`
+    : text;
+};
+
 // Reads name, email, picture and the date the account was created out of the
 // server's answer. THE ONE PLACE to match the field names if your backend
 // spells them differently.
@@ -761,11 +780,13 @@ const readProfile = (
     [first, last].filter(Boolean).join(" ");
 
   const photo =
-    text(user?.photo) ||
-    text(user?.avatar) ||
-    text(user?.profilePicture) ||
-    text(user?.image) ||
-    text(user?.imageUrl);
+    normalizePhoto(user?.avatar) ||
+    normalizePhoto(user?.avatarUrl) ||
+    normalizePhoto(user?.photo) ||
+    normalizePhoto(user?.profilePicture) ||
+    normalizePhoto(user?.image) ||
+    normalizePhoto(user?.imageUrl) ||
+    normalizePhoto(user?.picture);
 
   // The day the account was created. Tries the usual field names first, then
   // the moment hidden inside a MongoDB id as a backup.
@@ -790,23 +811,19 @@ const readProfile = (
 
 const fetchProfile = async () => readProfile(await profileRequest("GET"));
 
-// Saves the name (and the email, only if it was changed). The display name is
-// split into firstName and lastName, the way sign up stores them.
-const updateProfile = async (
-  next: { name: string; email: string },
-  previousEmail: string,
-  photo?: string,
-): Promise<void> => {
-  const [firstName, ...rest] = next.name.trim().split(/\s+/);
-  const body: Record<string, unknown> = {
-    firstName,
-    lastName: rest.join(" "),
-  };
-  if (next.email.trim().toLowerCase() !== previousEmail.trim().toLowerCase()) {
-    body.email = next.email.trim();
-  }
-  if (photo) body[PHOTO_FIELD] = photo;
-  await profileRequest("PATCH", body);
+// Turns the small picture made in the Edit screen back into an image file
+const dataUrlToFile = async (dataUrl: string): Promise<File> => {
+  const blob = await (await fetch(dataUrl)).blob();
+  return new File([blob], "avatar.jpg", { type: blob.type || "image/jpeg" });
+};
+
+// Saves the display name and, if there is one, the new picture. Returns the
+// picture's link as the server now has it ("" if it didn't send one back).
+const updateProfile = async (name: string, photo?: string): Promise<string> => {
+  const form = new FormData();
+  form.append("name", name.trim());
+  if (photo) form.append(PHOTO_FIELD, await dataUrlToFile(photo));
+  return readProfile(await profileRequest("PATCH", form)).photo;
 };
 
 // Deletes the account on the server
@@ -2899,36 +2916,36 @@ const Setings = () => {
 
   // Sends the changes to the backend, then closes the pop-up and confirms.
   // Returns "" when saved, or the reason it wasn't (the pop-up shows it).
-  const handleSave = async (next: ProfileData): Promise<string> => {
-    const textChanged =
-      next.name.trim() !== profileData.name.trim() ||
-      next.email.trim().toLowerCase() !==
-        profileData.email.trim().toLowerCase();
+  const handleSave = async (edited: ProfileData): Promise<string> => {
+    const textChanged = edited.name.trim() !== profileData.name.trim();
     // A newly chosen picture is sent to the server too, so it shows on every
     // device the person signs in on
     const photoChanged =
-      next.photo !== profileData.photo && next.photo.startsWith("data:");
+      edited.photo !== profileData.photo && edited.photo.startsWith("data:");
     const failure = (e: unknown) =>
       e instanceof Error && e.message
         ? e.message
         : "We couldn't save your changes. Please try again.";
 
+    let next = edited;
     let photoSynced = true;
     if (textChanged || photoChanged) {
       try {
-        await updateProfile(
-          next,
-          profileData.email,
-          photoChanged ? next.photo : undefined,
+        const savedPhoto = await updateProfile(
+          edited.name,
+          photoChanged ? edited.photo : undefined,
         );
+        // Use the server's link for the picture, so every device matches
+        if (photoChanged && savedPhoto) next = { ...edited, photo: savedPhoto };
+        else if (photoChanged) photoSynced = false;
       } catch (e) {
         if (!photoChanged) return failure(e);
-        // The server refused the picture: still save the name and email, and
-        // keep the picture on this device
+        // The server refused the picture: still save the name, and keep the
+        // picture on this device
         console.warn("[profile] the server didn't accept the picture:", e);
         if (textChanged) {
           try {
-            await updateProfile(next, profileData.email);
+            await updateProfile(edited.name);
           } catch (e2) {
             return failure(e2);
           }

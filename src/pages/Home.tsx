@@ -61,6 +61,9 @@ const isPhoto = (photo: unknown): photo is string =>
   typeof photo === "string" &&
   (photo.startsWith("data:image/") || photo.startsWith("http"));
 
+// Where the server lives (its picture links may start with "/")
+const API_ORIGIN = "https://planora-uliy.onrender.com";
+
 // A copy of the picture from the server, kept so it shows straight away
 const PHOTO_CACHE_KEY = "profilePhotoCache";
 
@@ -96,14 +99,24 @@ const readServerPhoto = (data: unknown): string => {
     body.data ??
     body;
   for (const key of [
+    "avatar",
+    "avatarUrl",
     "profilePicture",
     "photo",
-    "avatar",
     "image",
     "imageUrl",
     "picture",
   ]) {
-    if (isPhoto(user?.[key])) return user[key];
+    const value = user?.[key];
+    const link =
+      typeof value === "string"
+        ? value.trim()
+        : typeof value?.url === "string"
+          ? value.url.trim()
+          : "";
+    // A path starting with "/" belongs to the server
+    const full = link.startsWith("/") ? `${API_ORIGIN}${link}` : link;
+    if (isPhoto(full)) return full;
   }
   return "";
 };
