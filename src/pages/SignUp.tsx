@@ -62,6 +62,11 @@ const GOOGLE_SDK = "https://accounts.google.com/gsi/client";
 const APPLE_SDK =
   "https://appleid.cdn-apple.com/appleauth/static/jsapi/appleid/1/en_US/appleid.auth.js";
 
+// Turn Apple and Google sign-in on or off. While this is false, both buttons
+// stay on the page but are faded and cannot be tapped. Set it to true once the
+// Google / Apple client IDs are set up.
+const SOCIAL_SIGN_IN_ENABLED = false;
+
 type Provider = "google" | "apple";
 
 type SignUpDetails = {
@@ -512,6 +517,7 @@ const SignUp = () => {
   // Load the Apple and Google sign-in scripts ahead of time, so their windows
   // open the moment a button is tapped (browsers block pop-ups that open late)
   useEffect(() => {
+    if (!SOCIAL_SIGN_IN_ENABLED) return;
     if (GOOGLE_CLIENT_ID) loadScript(GOOGLE_SDK).catch(() => {});
     if (APPLE_CLIENT_ID) loadScript(APPLE_SDK).catch(() => {});
   }, []);
@@ -781,8 +787,9 @@ const SignUp = () => {
 
             <button
               type="button"
+              disabled={!SOCIAL_SIGN_IN_ENABLED}
               onClick={() => handleProvider("apple")}
-              className="flex h-11 w-full touch-manipulation items-center justify-center gap-2 rounded-xl bg-[#1A7431] px-3 text-white"
+              className="flex h-11 w-full touch-manipulation items-center justify-center gap-2 rounded-xl bg-[#1A7431] px-3 text-white disabled:cursor-not-allowed disabled:opacity-40"
             >
               <FaApple className="h-5 w-5 shrink-0" />
               <span className="text-[14px] font-normal">
@@ -793,19 +800,20 @@ const SignUp = () => {
             <div className="relative">
               <button
                 type="button"
+                disabled={!SOCIAL_SIGN_IN_ENABLED}
                 onClick={() => {
                   // Without a client ID Google's button can't be drawn
                   if (!GOOGLE_CLIENT_ID)
                     setErrorMsg("Google sign-in isn't set up yet.");
                 }}
-                className="flex h-11 w-full touch-manipulation items-center justify-center gap-2 rounded-xl bg-white px-3 text-[#1A7431]"
+                className="flex h-11 w-full touch-manipulation items-center justify-center gap-2 rounded-xl bg-white px-3 text-[#1A7431] disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <FcGoogle className="h-5 w-5 shrink-0" />
                 <span className="text-[14px] font-normal">
                   Continue with Google
                 </span>
               </button>
-              {GOOGLE_CLIENT_ID && (
+              {SOCIAL_SIGN_IN_ENABLED && GOOGLE_CLIENT_ID && (
                 <GoogleButton
                   onToken={(idToken) => handleProvider("google", idToken)}
                   onError={setErrorMsg}
